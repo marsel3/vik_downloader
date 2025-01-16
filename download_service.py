@@ -21,6 +21,18 @@ class Downloader:
         self._cache = {}
         self._cache_ttl = timedelta(minutes=5)
 
+    def _get_format_height(self, fmt):
+        """Безопасно получаем высоту формата"""
+        height = fmt.get('height', None)
+        if height is None:
+            # Пытаемся извлечь высоту из format_note или format
+            for field in [fmt.get('format_note', ''), fmt.get('format', '')]:
+                if field:
+                    for quality in ['1080p', '720p', '480p', '360p', '240p', '144p']:
+                        if quality in field:
+                            return int(quality.replace('p', ''))
+        return height or 0
+
     async def get_video_info(self, url: str) -> dict:
         try:
             now = datetime.now()
@@ -61,48 +73,47 @@ class Downloader:
 
                 formats = []
                 if is_youtube:
-                    # Начинаем с поиска аудио и его размера
-                    audio_formats = [f for f in info.get('formats', []) 
-                                   if f.get('acodec', 'none') != 'none' and 
-                                   (f.get('vcodec', 'none') == 'none' or not f.get('vcodec'))]
+                    available_formats = info.get('formats', [])
+                    # Находим лучший аудио формат
+                    audio_formats = [f for f in available_formats 
+                                   if f.get('acodec', 'none') != 'none' 
+                                   and (f.get('vcodec', 'none') == 'none' or not f.get('vcodec'))]
                     best_audio = max(audio_formats, key=lambda f: f.get('filesize', 0) or 0) if audio_formats else None
-                    audio_size = best_audio.get('filesize', 0) or 0
 
-                    # Собираем видео форматы
+                    # Группируем видеоформаты по качеству
                     video_formats = {}
-                    for f in info.get('formats', []):
+                    for f in available_formats:
                         if f.get('vcodec', 'none') != 'none':
-                            height = f.get('height', 0)
-                            if not height:
-                                continue
+                            height = self._get_format_height(f)
+                            if height > 0:
+                                if height not in video_formats or (f.get('filesize', 0) or 0) > (video_formats[height].get('filesize', 0) or 0):
+                                    video_formats[height] = f
 
-                            # Определяем качество
-                            if height <= 144:
-                                quality = 'url144'
-                            elif height <= 360:
-                                quality = 'url360'
-                            elif height <= 720:
-                                quality = 'url720'
-                            elif height <= 1080:
-                                quality = 'url1080'
-                            else:
-                                continue
+                    # Маппинг качества на format_id
+                    quality_mapping = {
+                        1080: 'url1080',
+                        720: 'url720',
+                        480: 'url480',
+                        360: 'url360',
+                        240: 'url240',
+                        144: 'url144'
+                    }
 
-                            # Сохраняем только лучший формат для каждого качества
-                            if quality not in video_formats or (f.get('filesize', 0) or 0) > (video_formats[quality].get('filesize', 0) or 0):
-                                video_formats[quality] = f
-
-                    # Формируем итоговый список форматов
-                    formats = []
-                    for quality, video_fmt in video_formats.items():
+                    # Создаем форматы для каждого доступного качества
+                    for height, video_fmt in video_formats.items():
+                        closest_quality = min(quality_mapping.keys(), key=lambda x: abs(x - height))
+                        format_id = quality_mapping[closest_quality]
+                        
                         video_size = video_fmt.get('filesize', 0) or 0
-                        total_size = video_size + audio_size  # Добавляем размер аудио
+                        audio_size = (best_audio.get('filesize', 0) or 0) if best_audio else 0
+                        total_size = video_size + audio_size
+
                         formats.append({
                             'url': video_fmt['url'],
-                            'format_id': quality,
-                            'ext': 'mp4',
+                            'format_id': format_id,
+                            'ext': video_fmt.get('ext', 'mp4'),
                             'filesize': total_size,
-                            'format': f"{video_fmt.get('height', '')}p",
+                            'format': f'{height}p',
                             'duration': info.get('duration', 0)
                         })
 
@@ -151,15 +162,14 @@ class Downloader:
                     'duration': str(info.get('duration', 0)),
                     'thumbnail': info.get('thumbnail', ''),
                     'author': info.get('uploader', 'Unknown'),
-                    'formats': sorted(formats, key=lambda x: float(x.get('format', '0').replace('p', '') or 0), reverse=True)
+                    'formats': sorted(formats, key=lambda x: (int(''.join(filter(str.isdigit, x.get('format', '0')))) if x.get('format', '').replace('p', '').isdigit() else 0), reverse=True)
                 }
                 
                 print(f"Available formats for {url}:")
                 for fmt in result['formats']:
                     print(f"Format: {fmt.get('format')}, ID: {fmt.get('format_id')}, Size: {fmt.get('filesize')}")
                 
-                if formats:
-                    self._cache[url] = (result.copy(), now)
+                self._cache[url] = (result.copy(), now)
                 return result.copy()
                 
         except Exception as e:
