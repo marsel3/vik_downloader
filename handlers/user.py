@@ -8,11 +8,9 @@ import tempfile
 import time
 import shutil
 import yt_dlp
-
 from database import *
 from keyboards import get_download_keyboard, estimate_video_size, format_size
 from download_service import downloader
-from loader import bot, dp
 
 user_router = Router()
 
