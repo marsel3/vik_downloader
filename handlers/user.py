@@ -1,3 +1,4 @@
+
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
@@ -7,7 +8,9 @@ import os
 import tempfile
 import time
 import shutil
+import aiohttp
 import yt_dlp
+from config import BOT_TOKEN
 from database import *
 from keyboards import get_download_keyboard, estimate_video_size, format_size
 from download_service import downloader
@@ -218,6 +221,15 @@ async def process_video_url(message: Message):
                     print(f"Error sending error message: {send_error}")
 
 
+async def send_large_video(message, video_path, caption):
+   return await message.answer_video(
+       video=FSInputFile(video_path),
+       caption=caption,
+       parse_mode="HTML",
+       supports_streaming=True
+   )
+   
+   
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery):
    await callback.answer()
@@ -280,6 +292,7 @@ async def process_download(callback: CallbackQuery):
 
            is_tiktok = 'tiktok.com' in db_video['source_url']
            is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
+           is_instagram = 'instagram.com' in db_video['source_url']
 
            if file_type == 'video':
                temp_path += '.mp4'
@@ -288,23 +301,28 @@ async def process_download(callback: CallbackQuery):
                        'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
                        'outtmpl': temp_path,
                        'merge_output_format': 'mp4',
+                       'fragment_retries': 50,
+                       'retries': 50,
+                       'socket_timeout': 120,
                        'quiet': True,
                        'no_warnings': True,
-                       'cookiefile': 'cookies.txt'  # Добавляем путь к файлу с cookies
+                       'cookiefile': 'cookies.txt',
+                       'http_chunk_size': 10485760
                    }
-               elif is_tiktok:
+               elif is_instagram:
                    ydl_opts = {
-                       'format': 'best',
+                       'format': 'best[ext=mp4]',
                        'outtmpl': temp_path,
                        'quiet': True,
                        'no_warnings': True,
+                       'cookiefile': 'cookies.txt'
                    }
                else:
                    ydl_opts = {
                        'format': f'best[height<={format_id}]',
                        'outtmpl': temp_path,
                        'quiet': True,
-                       'no_warnings': True,
+                       'no_warnings': True
                    }
                
                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -324,15 +342,7 @@ async def process_download(callback: CallbackQuery):
            caption = get_download_caption(video_data, file_type, format_id)
 
            if file_type == 'video':
-               with open(temp_path, 'rb') as video_file:
-                   msg = await callback.message.answer_video(
-                       video=BufferedInputFile(
-                           video_file.read(),
-                           filename=f"video_{format_id}.mp4"
-                       ),
-                       caption=caption,
-                       parse_mode="HTML"
-                   )
+               msg = await send_large_video(callback.message, temp_path, caption)
                file_id = msg.video.file_id
            else:
                msg = await callback.message.answer_audio(
@@ -380,8 +390,7 @@ async def process_download(callback: CallbackQuery):
 
    except Exception as e:
        print(f"Error in process_download: {e}")
-
-
+       
 @user_router.message()
 async def process_unknown_message(message: Message):
     await message.answer("Отправьте мне ссылку на видео, и я помогу вам его скачать.")
