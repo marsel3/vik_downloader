@@ -79,16 +79,29 @@ class Downloader:
 
             if is_instagram:
                 self.ydl_opts.update({
-                    'format': 'best',
+                    'format': '(best)[protocol^=http]',
                     'extract_flat': False,
-                    'ignore_no_formats_error': True,
-                    'quiet': False,
-                    'verbose': True,
-                    'no_warnings': False,
-                    'socket_timeout': 60,
-                    'retries': 10,
-                    'fragment_retries': 10,
-                    'file_access_retries': 5
+                    'quiet': True,
+                    'no_warnings': True,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+                        'Accept': '*/*',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Origin': 'https://www.instagram.com',
+                        'Referer': 'https://www.instagram.com/',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'same-site',
+                        'X-IG-App-ID': '936619743392459',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    'extractor_args': {
+                        'instagram': {
+                            'direct': True,
+                            'prefer_direct_download': True
+                        }
+                    }
                 })
             elif is_youtube:
                 self.ydl_opts.update({

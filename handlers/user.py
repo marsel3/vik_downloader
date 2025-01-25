@@ -221,16 +221,34 @@ async def process_video_url(message: Message):
 
 
 async def send_large_video(message, video_path, caption):
-   with open(video_path, 'rb') as video:
-       msg = await message.bot.send_video(
-           chat_id=message.chat.id,
-           video=FSInputFile(video_path, filename="video.mp4"),
-           caption=caption,
-           parse_mode="HTML",
-           supports_streaming=True
-       )
-       return msg
-   
+    try:
+        with open(video_path, 'rb') as video:
+            msg = await message.bot.send_video(
+                chat_id=message.chat.id,
+                video=FSInputFile(video_path),
+                caption=caption,
+                parse_mode="HTML"
+            )
+            return msg
+    except Exception as e:
+        print(f"First attempt error: {e}")
+        try:
+            with open(video_path, 'rb') as video:
+                buf = BufferedInputFile(
+                    video.read(),
+                    filename="video.mp4"
+                )
+                msg = await message.bot.send_video(
+                    chat_id=message.chat.id,
+                    video=buf,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+                return msg
+        except Exception as e2:
+            print(f"Second attempt error: {e2}")
+            raise
+        
        
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery):
@@ -325,7 +343,6 @@ async def process_download(callback: CallbackQuery):
                         'outtmpl': temp_path,
                         'quiet': True,
                         'no_warnings': True,
-                        'cookiefile': 'cookies.txt'
                     }
                 else:
                     ydl_opts = {
