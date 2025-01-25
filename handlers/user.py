@@ -1,4 +1,3 @@
-
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
@@ -222,12 +221,26 @@ async def process_video_url(message: Message):
 
 
 async def send_large_video(message, video_path, caption):
-   return await message.answer_video(
-       video=FSInputFile(video_path),
-       caption=caption,
-       parse_mode="HTML",
-       supports_streaming=True
-   )
+    form = aiohttp.FormData()
+    form.add_field(
+        name='video',
+        value=open(video_path, 'rb'),
+        filename='video.mp4',
+        content_type='video/mp4'
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f'https://api.telegram.org/bot{BOT_TOKEN}/sendVideo',
+            data=form,
+            params={
+                'chat_id': message.chat.id,
+                'caption': caption,
+                'parse_mode': 'HTML',
+                'supports_streaming': '1'  # Изменено с True на '1'
+            }
+        ) as response:
+            return await response.json()
    
    
 @user_router.callback_query(F.data.startswith("dl_"))
