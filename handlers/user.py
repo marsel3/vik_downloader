@@ -220,183 +220,167 @@ async def process_video_url(message: Message):
 
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery):
-    # Сразу отвечаем на callback, чтобы избежать timeout
-    await callback.answer()
-    
-    try:
-        _, video_id, format_id, file_type = callback.data.split("_")
-        video_id = int(video_id)
-    except ValueError:
-        return
-    
-    try:
-        # Проверяем кэш
-        file_info = await get_file(video_id, format_id, file_type)
-        db_video = await get_video_by_id(video_id)
-        
-        if not db_video:
-            await callback.message.answer("❌ Видео не найдено")
-            return
+   await callback.answer()
+   
+   try:
+       _, video_id, format_id, file_type = callback.data.split("_")
+       video_id = int(video_id)
+   except ValueError:
+       return
+   
+   try:
+       file_info = await get_file(video_id, format_id, file_type)
+       db_video = await get_video_by_id(video_id)
+       
+       if not db_video:
+           await callback.message.answer("❌ Видео не найдено")
+           return
 
-        # Создаем словарь с данными о видео
-        video_data = {
-            'title': db_video['title'],
-            'author': db_video['author'],
-            'duration': db_video['duration'],
-            'source_url': db_video['source_url'],
-            'thumbnail': db_video['thumbnail_url']
-        }
+       video_data = {
+           'title': db_video['title'],
+           'author': db_video['author'],
+           'duration': db_video['duration'],
+           'source_url': db_video['source_url'],
+           'thumbnail': db_video['thumbnail_url']
+       }
 
-        # Проверяем предполагаемый размер файла
-        estimated_size = estimate_video_size(float(db_video['duration']), format_id)
-        if estimated_size > 2000 * 1024 * 1024:  # 2000 MB в байтах
-            await callback.message.answer(
-                "⚠️ Файл слишком большой (более 2GB). Выберите меньшее качество."
-            )
-            return
+       if file_info:
+           try:
+               caption = get_download_caption(video_data, file_type, format_id)
+               
+               if file_type == 'video':
+                   msg = await callback.message.answer_video(
+                       video=file_info['telegram_file_id'],
+                       caption=caption,
+                       parse_mode="HTML"
+                   )
+               else:
+                   msg = await callback.message.answer_audio(
+                       audio=file_info['telegram_file_id'],
+                       caption=caption,
+                       parse_mode="HTML"
+                   )
+               await callback.message.delete()
+               return
+           except Exception as e:
+               print(f"Error sending cached file: {e}")
 
-        if file_info:
-            try:
-                caption = get_download_caption(video_data, file_type, format_id)
-                
-                if file_type == 'video':
-                    msg = await callback.message.answer_video(
-                        video=file_info['telegram_file_id'],
-                        caption=caption,
-                        parse_mode="HTML"
-                    )
-                else:
-                    msg = await callback.message.answer_audio(
-                        audio=file_info['telegram_file_id'],
-                        caption=caption,
-                        parse_mode="HTML"
-                    )
-                await callback.message.delete()
-                return
-            except Exception as e:
-                print(f"Error sending cached file: {e}")
+       temp_dir = tempfile.mkdtemp()
+       temp_path = None
 
-        # Создаём временную директорию
-        temp_dir = tempfile.mkdtemp()
-        temp_path = None
+       try:
+           await callback.message.edit_caption(
+               caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю из источника ⌛️📥",
+               parse_mode="HTML",
+               reply_markup=None
+           )
 
-        try:
-            # Начинаем загрузку
-            await callback.message.edit_caption(
-                caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю из источника ⌛️📥",
-                parse_mode="HTML",
-                reply_markup=None
-            )
+           file_name = f"video_{int(time.time())}"
+           temp_path = os.path.join(temp_dir, file_name)
 
-            file_name = f"video_{int(time.time())}"
-            temp_path = os.path.join(temp_dir, file_name)
+           is_tiktok = 'tiktok.com' in db_video['source_url']
+           is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
 
-            is_tiktok = 'tiktok.com' in db_video['source_url']
-            is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
+           if file_type == 'video':
+               temp_path += '.mp4'
+               if is_youtube:
+                   ydl_opts = {
+                       'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
+                       'outtmpl': temp_path,
+                       'merge_output_format': 'mp4',
+                       'quiet': True,
+                       'no_warnings': True,
+                       'cookiefile': 'cookies.txt'  # Добавляем путь к файлу с cookies
+                   }
+               elif is_tiktok:
+                   ydl_opts = {
+                       'format': 'best',
+                       'outtmpl': temp_path,
+                       'quiet': True,
+                       'no_warnings': True,
+                   }
+               else:
+                   ydl_opts = {
+                       'format': f'best[height<={format_id}]',
+                       'outtmpl': temp_path,
+                       'quiet': True,
+                       'no_warnings': True,
+                   }
+               
+               with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                   await asyncio.get_event_loop().run_in_executor(
+                       None, 
+                       lambda: ydl.download([db_video['source_url']])
+                   )
+           else:
+               temp_path += '.mp3'
+               success = await download_audio(video_data['source_url'], temp_path)
+               if not success:
+                   raise Exception("Failed to download audio")
 
-            if file_type == 'video':
-                temp_path += '.mp4'
-                if is_tiktok:
-                    ydl_opts = {
-                        'format': 'best',
-                        'outtmpl': temp_path,
-                        'quiet': True,
-                        'no_warnings': True,
-                    }
-            elif is_youtube:
-                ydl_opts = {
-                    'format': 'best[ext=mp4]',
-                    'outtmpl': temp_path,
-                    'no_check_certificate': True,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'socket_timeout': 30,
-                    'retries': 10,
-                    'fragment_retries': 10
-                }
+           if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+               raise Exception("File not downloaded correctly")
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, 
-                        lambda: ydl.download([db_video['source_url']])
-                    )
-            else:
-                temp_path += '.mp3'
-                success = await download_audio(video_data['source_url'], temp_path)
-                if not success:
-                    raise Exception("Failed to download audio")
+           caption = get_download_caption(video_data, file_type, format_id)
 
-            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
-                raise Exception("File not downloaded correctly")
+           if file_type == 'video':
+               with open(temp_path, 'rb') as video_file:
+                   msg = await callback.message.answer_video(
+                       video=BufferedInputFile(
+                           video_file.read(),
+                           filename=f"video_{format_id}.mp4"
+                       ),
+                       caption=caption,
+                       parse_mode="HTML"
+                   )
+               file_id = msg.video.file_id
+           else:
+               msg = await callback.message.answer_audio(
+                   audio=FSInputFile(temp_path),
+                   caption=caption,
+                   parse_mode="HTML"
+               )
+               file_id = msg.audio.file_id
 
-            caption = get_download_caption(video_data, file_type, format_id)
+           await callback.message.delete()
 
-            if file_type == 'video':
-                msg = await callback.message.answer_video(
-                    video=FSInputFile(temp_path),
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-                file_id = msg.video.file_id
-            else:
-                msg = await callback.message.answer_audio(
-                    audio=FSInputFile(temp_path),
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-                file_id = msg.audio.file_id
+           file_size = os.path.getsize(temp_path)
+           new_file_id = await add_file(
+               video_id=video_id,
+               telegram_file_id=file_id,
+               file_type=file_type,
+               size=file_size,
+               quality=format_id
+           )
 
-            await callback.message.delete()
+           await add_download(
+               user_id=callback.from_user.id,
+               video_id=video_id,
+               file_id=new_file_id
+           )
 
-            # Сохраняем в базу
-            file_size = os.path.getsize(temp_path)
-            new_file_id = await add_file(
-                video_id=video_id,
-                telegram_file_id=file_id,
-                file_type=file_type,
-                size=file_size,
-                quality=format_id
-            )
+       except Exception as e:
+           print(f"Download error: {e}")
+           info = await downloader.get_video_info(video_data['source_url'])
+           keyboard = await get_download_keyboard(video_id, info)
+           await callback.message.edit_caption(
+               caption=f"{callback.message.caption}\n\n❌ Ошибка при скачивании",
+               parse_mode="HTML",
+               reply_markup=keyboard
+           )
 
-            await add_download(
-                user_id=callback.from_user.id,
-                video_id=video_id,
-                file_id=new_file_id
-            )
+       finally:
+           try:
+               if temp_path and os.path.exists(temp_path):
+                   os.remove(temp_path)
+               if temp_dir and os.path.exists(temp_dir):
+                   shutil.rmtree(temp_dir)
+           except Exception as e:
+               print(f"Error cleaning temp files: {e}")
 
-        except Exception as e:
-            print(f"Download error: {e}")
-            # Если произошла ошибка, возвращаем клавиатуру
-            info = await downloader.get_video_info(video_data['source_url'])
-            keyboard = await get_download_keyboard(video_id, info)
-            await callback.message.edit_caption(
-                caption=f"{callback.message.caption}\n\n❌ Ошибка при скачивании",
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
+   except Exception as e:
+       print(f"Error in process_download: {e}")
 
-        finally:
-            # Очищаем временные файлы
-            try:
-                for root, dirs, files in os.walk(temp_dir, topdown=False):
-                    for name in files:
-                        try:
-                            os.remove(os.path.join(root, name))
-                        except: pass
-                    for name in dirs:
-                        try:
-                            os.rmdir(os.path.join(root, name))
-                        except: pass
-                try:
-                    if os.path.exists(temp_dir):
-                        os.rmdir(temp_dir)
-                except: pass
-            except Exception as e:
-                print(f"Error cleaning temp files: {e}")
-
-    except Exception as e:
-        print(f"Error in process_download: {e}")
-        
 
 @user_router.message()
 async def process_unknown_message(message: Message):
