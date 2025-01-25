@@ -174,19 +174,28 @@ class Downloader:
 
                 elif is_youtube:
                     available_formats = info.get('formats', [])
+                    
+                    # Собираем аудио форматы
                     audio_formats = [f for f in available_formats 
-                                   if f.get('acodec', 'none') != 'none' 
-                                   and (f.get('vcodec', 'none') == 'none' or not f.get('vcodec'))]
+                                    if f.get('acodec', 'none') != 'none' 
+                                    and (f.get('vcodec', 'none') == 'none' or not f.get('vcodec'))]
                     best_audio = max(audio_formats, key=lambda f: self._safe_get_filesize(f)) if audio_formats else None
-
+                    
+                    # Собираем видео форматы
                     video_formats = {}
                     for f in available_formats:
-                        if f.get('vcodec', 'none') != 'none':
-                            height = self._get_format_height(f)
-                            if height > 0:
-                                if height not in video_formats or self._safe_get_filesize(f) > self._safe_get_filesize(video_formats[height]):
-                                    video_formats[height] = f
-
+                        if f.get('vcodec', 'none') == 'none':
+                            continue
+                            
+                        height = self._get_format_height(f)
+                        if height <= 0:
+                            continue
+                            
+                        current_size = self._safe_get_filesize(f)
+                        if height not in video_formats or current_size > self._safe_get_filesize(video_formats[height]):
+                            video_formats[height] = f
+                    
+                    # Стандартизируем качество
                     quality_mapping = {
                         1080: 'url1080',
                         720: 'url720',
@@ -195,7 +204,8 @@ class Downloader:
                         240: 'url240',
                         144: 'url144'
                     }
-
+                    
+                    # Формируем итоговые форматы
                     for height, video_fmt in video_formats.items():
                         closest_quality = min(quality_mapping.keys(), key=lambda x: abs(x - height))
                         format_id = quality_mapping[closest_quality]
@@ -203,16 +213,22 @@ class Downloader:
                         video_size = self._safe_get_filesize(video_fmt)
                         audio_size = self._safe_get_filesize(best_audio) if best_audio else 0
                         total_size = video_size + audio_size
-
+                        
+                        video_url = video_fmt.get('url')
+                        if not video_url and video_fmt.get('fragment_base_url'):
+                            video_url = video_fmt['fragment_base_url']
+                        
                         formats.append({
-                            'url': video_fmt['url'],
+                            'url': video_url,
                             'format_id': format_id,
                             'ext': video_fmt.get('ext', 'mp4'),
                             'filesize': total_size,
                             'format': f'{height}p',
                             'duration': duration,
                             'width': self._safe_int(video_fmt.get('width'), 0),
-                            'height': height
+                            'height': height,
+                            'vcodec': video_fmt.get('vcodec', ''),
+                            'acodec': video_fmt.get('acodec', '')
                         })
 
                 elif is_tiktok:

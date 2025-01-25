@@ -303,41 +303,22 @@ async def process_download(callback: CallbackQuery):
                         'quiet': True,
                         'no_warnings': True,
                     }
-                elif is_youtube:
-                    quality_height = format_id.replace('url', '')
-                    ydl_opts = {
-                        'format': f'bestvideo[height<={quality_height}]+bestaudio/best[height<={quality_height}]',
-                        'merge_output_format': 'mp4',
-                        'outtmpl': temp_path,
-                        'quiet': True,
-                        'no_warnings': True,
-                        'retries': 10,
-                        'fragment_retries': 10,
-                        'http_chunk_size': 10485760,
-                        'socket_timeout': 30,
-                        'extractor_args': {
-                            'youtube': {
-                                'skip_webpage': True,
-                                'player_skip': ['js', 'webpage', 'configs'],
-                                'player_client': ['android', 'web'],
-                            }
-                        },
-                        'extractor_retries': 5,
-                        'file_access_retries': 5,
-                        'hls_prefer_native': True,
-                    }
-                else:
-                    ydl_opts = {
-                        'format': f'url{format_id}',
-                        'outtmpl': temp_path,
-                        'quiet': True,
-                        'no_warnings': True,
-                    }
+            elif is_youtube:
+                ydl_opts = {
+                    'format': 'best[ext=mp4]',
+                    'outtmpl': temp_path,
+                    'no_check_certificate': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 10,
+                    'fragment_retries': 10
+                }
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     await asyncio.get_event_loop().run_in_executor(
                         None, 
-                        lambda: ydl.download([video_data['source_url']])
+                        lambda: ydl.download([db_video['source_url']])
                     )
             else:
                 temp_path += '.mp3'
