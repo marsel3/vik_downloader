@@ -221,189 +221,187 @@ async def process_video_url(message: Message):
 
 
 async def send_large_video(message, video_path, caption):
-    form = aiohttp.FormData()
-    form.add_field(
-        name='video',
-        value=open(video_path, 'rb'),
-        filename='video.mp4',
-        content_type='video/mp4'
-    )
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendVideo',
-            data=form,
-            params={
-                'chat_id': message.chat.id,
-                'caption': caption,
-                'parse_mode': 'HTML',
-                'supports_streaming': '1'  # Изменено с True на '1'
-            }
-        ) as response:
-            return await response.json()
+   with open(video_path, 'rb') as video:
+       msg = await message.bot.send_video(
+           chat_id=message.chat.id,
+           video=FSInputFile(video_path, filename="video.mp4"),
+           caption=caption,
+           parse_mode="HTML",
+           supports_streaming=True
+       )
+       return msg
    
-   
+       
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery):
-   await callback.answer()
-   
-   try:
-       _, video_id, format_id, file_type = callback.data.split("_")
-       video_id = int(video_id)
-   except ValueError:
-       return
-   
-   try:
-       file_info = await get_file(video_id, format_id, file_type)
-       db_video = await get_video_by_id(video_id)
-       
-       if not db_video:
-           await callback.message.answer("❌ Видео не найдено")
-           return
+    await callback.answer()
+    
+    try:
+        _, video_id, format_id, file_type = callback.data.split("_")
+        video_id = int(video_id)
+    except ValueError:
+        return
+    
+    try:
+        file_info = await get_file(video_id, format_id, file_type)
+        db_video = await get_video_by_id(video_id)
+        
+        if not db_video:
+            await callback.message.answer("❌ Видео не найдено")
+            return
 
-       video_data = {
-           'title': db_video['title'],
-           'author': db_video['author'],
-           'duration': db_video['duration'],
-           'source_url': db_video['source_url'],
-           'thumbnail': db_video['thumbnail_url']
-       }
+        video_data = {
+            'title': db_video['title'],
+            'author': db_video['author'],
+            'duration': db_video['duration'],
+            'source_url': db_video['source_url'],
+            'thumbnail': db_video['thumbnail_url']
+        }
 
-       if file_info:
-           try:
-               caption = get_download_caption(video_data, file_type, format_id)
-               
-               if file_type == 'video':
-                   msg = await callback.message.answer_video(
-                       video=file_info['telegram_file_id'],
-                       caption=caption,
-                       parse_mode="HTML"
-                   )
-               else:
-                   msg = await callback.message.answer_audio(
-                       audio=file_info['telegram_file_id'],
-                       caption=caption,
-                       parse_mode="HTML"
-                   )
-               await callback.message.delete()
-               return
-           except Exception as e:
-               print(f"Error sending cached file: {e}")
+        if file_info:
+            try:
+                caption = get_download_caption(video_data, file_type, format_id)
+                
+                if file_type == 'video':
+                    msg = await callback.message.answer_video(
+                        video=file_info['telegram_file_id'],
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                else:
+                    msg = await callback.message.answer_audio(
+                        audio=file_info['telegram_file_id'],
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                await callback.message.delete()
+                return
+            except Exception as e:
+                print(f"Error sending cached file: {e}")
 
-       temp_dir = tempfile.mkdtemp()
-       temp_path = None
+        temp_dir = tempfile.mkdtemp()
+        temp_path = None
 
-       try:
-           await callback.message.edit_caption(
-               caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю из источника ⌛️📥",
-               parse_mode="HTML",
-               reply_markup=None
-           )
+        try:
+            await callback.message.edit_caption(
+                caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю из источника ⌛️📥",
+                parse_mode="HTML",
+                reply_markup=None
+            )
 
-           file_name = f"video_{int(time.time())}"
-           temp_path = os.path.join(temp_dir, file_name)
+            file_name = f"video_{int(time.time())}"
+            temp_path = os.path.join(temp_dir, file_name)
 
-           is_tiktok = 'tiktok.com' in db_video['source_url']
-           is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
-           is_instagram = 'instagram.com' in db_video['source_url']
+            is_tiktok = 'tiktok.com' in db_video['source_url']
+            is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
+            is_instagram = 'instagram.com' in db_video['source_url']
 
-           if file_type == 'video':
-               temp_path += '.mp4'
-               if is_youtube:
-                   ydl_opts = {
-                       'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
-                       'outtmpl': temp_path,
-                       'merge_output_format': 'mp4',
-                       'fragment_retries': 50,
-                       'retries': 50,
-                       'socket_timeout': 120,
-                       'quiet': True,
-                       'no_warnings': True,
-                       'cookiefile': 'cookies.txt',
-                       'http_chunk_size': 10485760
-                   }
-               elif is_instagram:
-                   ydl_opts = {
-                       'format': 'best[ext=mp4]',
-                       'outtmpl': temp_path,
-                       'quiet': True,
-                       'no_warnings': True,
-                       'cookiefile': 'cookies.txt'
-                   }
-               else:
-                   ydl_opts = {
-                       'format': f'best[height<={format_id}]',
-                       'outtmpl': temp_path,
-                       'quiet': True,
-                       'no_warnings': True
-                   }
-               
-               with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                   await asyncio.get_event_loop().run_in_executor(
-                       None, 
-                       lambda: ydl.download([db_video['source_url']])
-                   )
-           else:
-               temp_path += '.mp3'
-               success = await download_audio(video_data['source_url'], temp_path)
-               if not success:
-                   raise Exception("Failed to download audio")
+            if file_type == 'video':
+                temp_path += '.mp4'
+                if is_tiktok:
+                    ydl_opts = {
+                        'format': 'best', # Вместо попытки выбрать конкретное качество берем лучшее
+                        'outtmpl': temp_path,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'merge_output_format': 'mp4'
+                    }
+                elif is_youtube:
+                    ydl_opts = {
+                        'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
+                        'outtmpl': temp_path,
+                        'merge_output_format': 'mp4',
+                        'fragment_retries': 50,
+                        'retries': 50,
+                        'socket_timeout': 120,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'cookiefile': 'cookies.txt',
+                        'http_chunk_size': 10485760
+                    }
+                elif is_instagram:
+                    ydl_opts = {
+                        'format': 'best[ext=mp4]',
+                        'outtmpl': temp_path,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'cookiefile': 'cookies.txt'
+                    }
+                else:
+                    ydl_opts = {
+                        'format': f'best[height<={format_id}]',
+                        'outtmpl': temp_path,
+                        'quiet': True,
+                        'no_warnings': True
+                    }
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, 
+                        lambda: ydl.download([db_video['source_url']])
+                    )
+            else:
+                temp_path += '.mp3'
+                success = await download_audio(video_data['source_url'], temp_path)
+                if not success:
+                    raise Exception("Failed to download audio")
 
-           if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
-               raise Exception("File not downloaded correctly")
+            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                raise Exception("File not downloaded correctly")
 
-           caption = get_download_caption(video_data, file_type, format_id)
+            caption = get_download_caption(video_data, file_type, format_id)
 
-           if file_type == 'video':
-               msg = await send_large_video(callback.message, temp_path, caption)
-               file_id = msg.video.file_id
-           else:
-               msg = await callback.message.answer_audio(
-                   audio=FSInputFile(temp_path),
-                   caption=caption,
-                   parse_mode="HTML"
-               )
-               file_id = msg.audio.file_id
+            if file_type == 'video':
+                msg = await send_large_video(callback.message, temp_path, caption)
+                file_id = msg.video.file_id
+            else:
+                msg = await callback.message.answer_audio(
+                    audio=FSInputFile(temp_path),
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+                file_id = msg.audio.file_id
 
-           await callback.message.delete()
+            await callback.message.delete()
 
-           file_size = os.path.getsize(temp_path)
-           new_file_id = await add_file(
-               video_id=video_id,
-               telegram_file_id=file_id,
-               file_type=file_type,
-               size=file_size,
-               quality=format_id
-           )
+            file_size = os.path.getsize(temp_path)
+            new_file_id = await add_file(
+                video_id=video_id,
+                telegram_file_id=file_id,
+                file_type=file_type,
+                size=file_size,
+                quality=format_id
+            )
 
-           await add_download(
-               user_id=callback.from_user.id,
-               video_id=video_id,
-               file_id=new_file_id
-           )
+            await add_download(
+                user_id=callback.from_user.id,
+                video_id=video_id,
+                file_id=new_file_id
+            )
 
-       except Exception as e:
-           print(f"Download error: {e}")
-           info = await downloader.get_video_info(video_data['source_url'])
-           keyboard = await get_download_keyboard(video_id, info)
-           await callback.message.edit_caption(
-               caption=f"{callback.message.caption}\n\n❌ Ошибка при скачивании",
-               parse_mode="HTML",
-               reply_markup=keyboard
-           )
+        except Exception as e:
+            print(f"Download error: {e}")
+            info = await downloader.get_video_info(video_data['source_url'])
+            keyboard = await get_download_keyboard(video_id, info)
+            await callback.message.edit_caption(
+                caption=f"{callback.message.caption}\n\n❌ Ошибка при скачивании",
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
 
-       finally:
-           try:
-               if temp_path and os.path.exists(temp_path):
-                   os.remove(temp_path)
-               if temp_dir and os.path.exists(temp_dir):
-                   shutil.rmtree(temp_dir)
-           except Exception as e:
-               print(f"Error cleaning temp files: {e}")
+        finally:
+            try:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                print(f"Error cleaning temp files: {e}")
 
-   except Exception as e:
-       print(f"Error in process_download: {e}")
-       
+    except Exception as e:
+        print(f"Error in process_download: {e}")
+        
+     
 @user_router.message()
 async def process_unknown_message(message: Message):
     await message.answer("Отправьте мне ссылку на видео, и я помогу вам его скачать.")

@@ -96,7 +96,10 @@ class Downloader:
                 })
             elif is_tiktok:
                 self.ydl_opts.update({
-                    'format': 'best'
+                    'format': 'best',
+                    'extract_flat': False,
+                    'quiet': True,
+                    'no_warnings': True
                 })
 
             loop = asyncio.get_event_loop()
@@ -232,16 +235,31 @@ class Downloader:
                         })
 
                 elif is_tiktok:
-                    formats.append({
-                        'url': info.get('url', ''),
-                        'format_id': 'url720',
-                        'ext': 'mp4',
-                        'filesize': self._safe_get_filesize(info),
-                        'format': 'HD',
-                        'duration': duration,
-                        'width': self._safe_int(info.get('width'), 0),
-                        'height': self._safe_int(info.get('height'), 720)
-                    })
+                    video_formats = [f for f in info.get('formats', []) if f.get('vcodec') != 'none']
+                    if video_formats:
+                        best_video = max(video_formats, key=lambda f: self._safe_get_filesize(f))
+                        formats.append({
+                            'url': best_video.get('url', ''),
+                            'format_id': 'url720',  # Используем фиксированный format_id
+                            'ext': best_video.get('ext', 'mp4'),
+                            'filesize': self._safe_get_filesize(best_video),
+                            'format': 'HD',
+                            'duration': duration,
+                            'width': self._safe_int(best_video.get('width'), 0),
+                            'height': self._safe_int(best_video.get('height'), 720)
+                        })
+                    else:
+                        # Если не нашли видео форматы, используем основной URL
+                        formats.append({
+                            'url': info.get('url', ''),
+                            'format_id': 'url720',
+                            'ext': info.get('ext', 'mp4'),
+                            'filesize': self._safe_get_filesize(info),
+                            'format': 'HD',
+                            'duration': duration,
+                            'width': self._safe_int(info.get('width'), 0),
+                            'height': self._safe_int(info.get('height'), 720)
+                        })
 
                 else:
                     for f in info.get('formats', []):
@@ -290,7 +308,8 @@ class Downloader:
                     'duration': str(duration),
                     'thumbnail': info.get('thumbnail', ''),
                     'author': info.get('uploader', 'Unknown'),
-                    'formats': sorted_formats
+                    'formats': sorted_formats,
+                    'source_url': url
                 }
 
                 print(f"Available formats for {url}:")
@@ -310,8 +329,6 @@ class Downloader:
             print(f"Error in get_video_info: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
             return None
-
-
 
     def clear_cache(self):
         """Очищает весь кэш"""
