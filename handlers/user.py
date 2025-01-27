@@ -418,7 +418,12 @@ async def process_download(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in process_download: {e}")
         
-     
+
+@user_router.callback_query(F.data == "size_limit")
+async def process_size_limit(callback: CallbackQuery):
+    await callback.answer("❌ Файл слишком большой (>50MB). Выберите меньшее качество.", show_alert=True)
+    
+
 @user_router.message()
 async def process_unknown_message(message: Message):
     await message.answer("Отправьте мне ссылку на видео, и я помогу вам его скачать.")

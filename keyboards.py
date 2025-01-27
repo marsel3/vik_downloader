@@ -39,13 +39,10 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
 
 async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMarkup:
-    """
-    Создает клавиатуру с кнопками для скачивания видео в разных форматах.
-    Показывает примерный размер файла и отмечает кэшированные файлы.
-    """
     keyboard = []
     duration = float(info.get('duration', 0))
     formats = info.get('formats', [])
+    url = info.get('source_url', '')
     
     # Проверяем наличие аудио в кэше
     cached_audio = await get_file(video_id, 'audio', 'audio')
@@ -55,46 +52,81 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
     audio_size = audio_format.get('filesize', 0) if audio_format else estimate_video_size(duration, 'audio')
     
     # Аудио кнопка
-    keyboard.append([
-        InlineKeyboardButton(
-            text=f"🎵 audio / {format_size(audio_size)} {'⚡️' if cached_audio else ''}",
-            callback_data=f"dl_{video_id}_audio_audio"
-        )
-    ])
+    if audio_size < 50 * 1024 * 1024:  # Меньше 50MB
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎵 audio / {format_size(audio_size)} {'⚡️' if cached_audio else ''}",
+                callback_data=f"dl_{video_id}_audio_audio"
+            )
+        ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎵 audio / {format_size(audio_size)} ⚠️",
+                callback_data=f"size_limit"
+            )
+        ])
+
+    is_instagram = 'instagram.com' in url
     
-    # Видео кнопки с разными разрешениями
-    video_resolutions = [
-        ("256x144", "144"),
-        ("426x240", "240"),
-        ("640x360", "360"),
-        ("852x480", "480"),
-        ("1280x720", "720"),
-        ("1920x1080", "1080")
-    ]
-    
-    for resolution, quality in video_resolutions:
-        # Ищем соответствующий формат в списке доступных
-        matching_format = next(
-            (f for f in formats if f.get('format_id') == f'url{quality}'), 
-            None
-        )
-        
-        if matching_format:
-            # Используем реальный размер файла если доступен
-            size = matching_format.get('filesize', 0)
-            if not size:
-                size = estimate_video_size(duration, quality)
+    if is_instagram:
+        # Для Instagram показываем только одну кнопку с лучшим качеством
+        best_format = max(formats, key=lambda x: x.get('filesize', 0) if x.get('filesize', 0) > 0 else 0)
+        if best_format:
+            size = best_format.get('filesize', 0)
+            cached_video = await get_file(video_id, '720', 'video')
             
-            # Проверяем наличие в кэше
-            cached_video = await get_file(video_id, quality, 'video')
-            
-            # Если размер меньше 2GB, добавляем кнопку
-            if size < 2000 * 1024 * 1024:  # 2000 MB в байтах
+            if size < 50 * 1024 * 1024:  # Меньше 50MB
                 keyboard.append([
                     InlineKeyboardButton(
-                        text=f"📹 {resolution} / {format_size(size)} {'⚡️' if cached_video else ''}",
-                        callback_data=f"dl_{video_id}_{quality}_video"
+                        text=f"📹 HD / {format_size(size)} {'⚡️' if cached_video else ''}",
+                        callback_data=f"dl_{video_id}_720_video"
                     )
                 ])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text=f"📹 HD / {format_size(size)} ⚠️",
+                        callback_data=f"size_limit"
+                    )
+                ])
+    else:
+        # Для остальных платформ оставляем текущую логику
+        video_resolutions = [
+            ("256x144", "144"),
+            ("426x240", "240"),
+            ("640x360", "360"),
+            ("852x480", "480"),
+            ("1280x720", "720"),
+            ("1920x1080", "1080")
+        ]
+        
+        for resolution, quality in video_resolutions:
+            matching_format = next(
+                (f for f in formats if f.get('format_id') == f'url{quality}'), 
+                None
+            )
+            
+            if matching_format:
+                size = matching_format.get('filesize', 0)
+                if not size:
+                    size = estimate_video_size(duration, quality)
+                
+                cached_video = await get_file(video_id, quality, 'video')
+                
+                if size < 50 * 1024 * 1024:  # Меньше 50MB
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            text=f"📹 {resolution} / {format_size(size)} {'⚡️' if cached_video else ''}",
+                            callback_data=f"dl_{video_id}_{quality}_video"
+                        )
+                    ])
+                else:
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            text=f"📹 {resolution} / {format_size(size)} ⚠️",
+                            callback_data=f"size_limit"
+                        )
+                    ])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
