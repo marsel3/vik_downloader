@@ -1,19 +1,16 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_file
 
+
 def estimate_video_size(duration: float, quality: str) -> int:
-    """
-    Оценивает размер видео на основе длительности и качества.
-    Используется только как запасной вариант, когда нет информации о реальном размере.
-    """
     BITRATES = {
-        '144': 0.3,    # ~0.3 Mbps
-        '240': 0.5,    # ~0.5 Mbps
-        '360': 1.0,    # ~1.0 Mbps
-        '480': 2.5,    # ~2.5 Mbps
-        '720': 5.0,    # ~5.0 Mbps
-        '1080': 8.0,   # ~8.0 Mbps
-        'audio': 0.128  # ~128 kbps для аудио
+        '144': 0.2,    # ~0.2 Mbps для VK (было 0.3)
+        '240': 0.35,   # ~0.35 Mbps для VK (было 0.5)
+        '360': 0.65,   # ~0.65 Mbps для VK (было 1.0)
+        '480': 1.7,    # ~1.7 Mbps для VK (было 2.5)
+        '720': 3.3,    # ~3.3 Mbps для VK (было 5.0)
+        '1080': 5.2,   # ~5.2 Mbps для VK (было 8.0)
+        'audio': 0.128  # ~128 kbps для аудио (без изменений)
     }
     
     # Получаем битрейт в Mbps
@@ -27,8 +24,8 @@ def estimate_video_size(duration: float, quality: str) -> int:
     
     return int(size_bytes)
 
+
 def format_size(size_bytes: int) -> str:
-    """Форматируем размер в читаемый вид"""
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
@@ -37,6 +34,7 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     else:
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
 
 async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMarkup:
     keyboard = []
