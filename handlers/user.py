@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from pathlib import Path
 import asyncio
 import tempfile
@@ -38,20 +38,43 @@ user_router = Router()
 
 
 class VideoDownloadError(Exception):
-    """Custom exception for video download errors"""
+    """Пользовательская ошибка для проблем с загрузкой видео"""
     pass
 
 
 async def safe_delete_message(message: Message) -> None:
-    """Safely delete a message with error handling"""
+    """Безопасное удаление сообщения с обработкой ошибок"""
     try:
         await message.delete()
     except TelegramAPIError:
-        pass
+        # Игнорируем ошибки при удалении сообщения
+        return
+
+
+def get_error_message(error: Exception) -> str:
+    """Получение понятного пользователю сообщения об ошибке"""
+    error_text = str(error).lower()
+    
+    if "404" in error_text:
+        return "❌ Видео не найдено. Возможно, оно было удалено или ссылка неверна."
+    elif "deleted" in error_text:
+        return "❌ Это видео было удалено и больше недоступно."
+    elif "private" in error_text:
+        return "❌ Это приватное видео. У бота нет доступа к нему."
+    elif "copyright" in error_text:
+        return "❌ Видео недоступно из-за нарушения авторских прав."
+    elif "age" in error_text:
+        return "❌ Видео имеет возрастные ограничения. Бот не может его загрузить."
+    elif "unavailable" in error_text:
+        return "❌ Видео недоступно для скачивания."
+    elif "too large" in error_text:
+        return "❌ Файл слишком большой для загрузки в Telegram (максимум 50MB)."
+    else:
+        return f"❌ Произошла ошибка при обработке видео: {str(error)}"
 
 
 async def download_audio(url: str, output_path: str) -> bool:
-    """Download audio from video URL"""
+    """Загрузка аудио из видео"""
     try:
         ydl_opts = {
             'format': 'worstaudio/worst',
@@ -64,14 +87,14 @@ async def download_audio(url: str, output_path: str) -> bool:
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-            
-        return True
-    except Exception:
+            return True
+    except Exception as e:
+        print(f"Ошибка при загрузке аудио: {str(e)}")
         return False
 
 
 def format_duration(duration: int) -> str:
-    """Format duration in seconds to human readable string"""
+    """Форматирование длительности в читаемый вид"""
     hours = duration // 3600
     minutes = (duration % 3600) // 60
     seconds = duration % 60
@@ -82,7 +105,7 @@ def format_duration(duration: int) -> str:
 
 
 def get_initial_caption(info: Dict[str, Any]) -> str:
-    """Generate initial message caption with video information"""
+    """Генерация начального описания с информацией о видео"""
     title = info.get('title', 'Без названия').replace('&quot;', '"')
     author = info.get('author', 'Unknown').replace('&quot;', '"')
     source_url = info.get('source_url', '')
@@ -98,7 +121,7 @@ def get_initial_caption(info: Dict[str, Any]) -> str:
 
 
 def get_download_caption(info: Dict[str, Any], file_type: str, quality: Optional[str] = None) -> str:
-    """Generate caption for downloaded video/audio"""
+    """Генерация описания для загруженного видео/аудио"""
     title = info.get('title', 'Без названия').replace('&quot;', '"')
     author = info.get('author', 'Unknown').replace('&quot;', '"')
     source_url = info.get('source_url', '')
@@ -130,7 +153,7 @@ def get_download_caption(info: Dict[str, Any], file_type: str, quality: Optional
 
 
 def get_platform(url: str) -> Optional[str]:
-    """Determine platform from URL"""
+    """Определение платформы из URL"""
     for domain, platform in SUPPORTED_PLATFORMS.items():
         if domain in url.lower():
             return platform
@@ -139,13 +162,16 @@ def get_platform(url: str) -> Optional[str]:
 
 @user_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    """Handle /start command"""
+    """Обработка команды /start"""
     try:
         if not await check_user_exists(message.from_user.id):
             await add_user(message.from_user.id, message.from_user.username)
-        await message.answer("👋 Привет! Отправь мне ссылку на видео, и я помогу тебе его скачать.")
-    except Exception:
-        await message.answer("❌ Произошла ошибка при запуске бота")
+        await message.answer(
+            "👋 Привет! Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+            "и я помогу тебе его скачать."
+        )
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка при запуске бота: {str(e)}")
 
 
 @user_router.message(
@@ -155,14 +181,15 @@ async def cmd_start(message: Message) -> None:
     )
 )
 async def process_video_url(message: Message) -> None:
-    """Process video URL message"""
+    """Обработка сообщения с URL видео"""
     processing_msg = None
     try:
         url = message.text.strip()
         platform = get_platform(url)
         
         if not platform:
-            await message.answer("❌ Неподдерживаемая платформа")
+            platforms = ", ".join(SUPPORTED_PLATFORMS.keys())
+            await message.answer(f"❌ Неподдерживаемая платформа. Поддерживаются: {platforms}")
             return
 
         processing_msg = await message.answer("⏳ Получаю информацию о видео...")
@@ -172,7 +199,7 @@ async def process_video_url(message: Message) -> None:
         
         if not info:
             if processing_msg:
-                await processing_msg.edit_text("❌ Не удалось получить информацию о видео")
+                await processing_msg.edit_text("❌ Не удалось получить информацию о видео. Проверьте ссылку.")
             return
 
         video_data = {
@@ -215,8 +242,8 @@ async def process_video_url(message: Message) -> None:
                 reply_markup=keyboard
             )
             
-    except Exception:
-        error_message = "❌ Произошла ошибка при обработке видео"
+    except Exception as e:
+        error_message = get_error_message(e)
         
         if processing_msg:
             try:
@@ -226,7 +253,7 @@ async def process_video_url(message: Message) -> None:
 
 
 async def send_large_video(message: Message, video_path: str, caption: str) -> Optional[Message]:
-    """Send large video file with retry logic"""
+    """Отправка большого видео файла с повторными попытками"""
     for attempt in range(MAX_RETRY_ATTEMPTS):
         try:
             with open(video_path, 'rb') as video:
@@ -236,7 +263,7 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
                     caption=caption,
                     parse_mode="HTML"
                 )
-        except Exception:
+        except Exception as e:
             if attempt == MAX_RETRY_ATTEMPTS - 1:
                 try:
                     with open(video_path, 'rb') as video:
@@ -250,8 +277,8 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
                             caption=caption,
                             parse_mode="HTML"
                         )
-                except Exception:
-                    raise VideoDownloadError("Failed to send video after all attempts")
+                except Exception as e:
+                    raise VideoDownloadError(f"Не удалось отправить видео после всех попыток: {str(e)}")
             else:
                 await asyncio.sleep(1)
     return None
@@ -259,7 +286,7 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
 
 async def download_video(url: str, output_path: str, format_id: str, is_tiktok: bool = False,
                         is_youtube: bool = False, is_instagram: bool = False) -> None:
-    """Download video with platform-specific options"""
+    """Загрузка видео с учетом особенностей платформы"""
     if is_tiktok:
         ydl_opts = {
             'format': 'best',
@@ -297,21 +324,25 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
         }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        await asyncio.get_event_loop().run_in_executor(
-            None, 
-            lambda: ydl.download([url])
-        )
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: ydl.download([url])
+            )
+        except Exception as e:
+            raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
 
 
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery) -> None:
-    """Handle download button callbacks"""
+    """Обработка нажатий на кнопки загрузки"""
     await callback.answer()
     
     try:
         _, video_id, format_id, file_type = callback.data.split("_")
         video_id = int(video_id)
-    except ValueError:
+    except ValueError as e:
+        await callback.message.answer("❌ Неверный формат данных кнопки")
         return
     
     try:
@@ -319,7 +350,7 @@ async def process_download(callback: CallbackQuery) -> None:
         db_video = await get_video_by_id(video_id)
         
         if not db_video:
-            await callback.message.answer("❌ Видео не найдено")
+            await callback.message.answer("❌ Видео не найдено в базе данных")
             return
 
         video_data = {
@@ -348,13 +379,13 @@ async def process_download(callback: CallbackQuery) -> None:
                     )
                 await safe_delete_message(callback.message)
                 return
-            except TelegramAPIError:
-                pass
+            except TelegramAPIError as e:
+                print(f"Ошибка при отправке файла из кэша: {str(e)}")
 
         with tempfile.TemporaryDirectory(prefix=TEMP_FILE_PREFIX) as temp_dir:
             try:
                 await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю из источника ⌛️📥",
+                    caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю файл... ⌛️📥",
                     parse_mode="HTML",
                     reply_markup=None
                 )
@@ -380,10 +411,10 @@ async def process_download(callback: CallbackQuery) -> None:
                     temp_path = temp_path.with_suffix('.mp3')
                     success = await download_audio(video_data['source_url'], str(temp_path))
                     if not success:
-                        raise VideoDownloadError("Failed to download audio")
+                        raise VideoDownloadError("Не удалось загрузить аудио файл")
 
                 if not temp_path.exists() or temp_path.stat().st_size == 0:
-                    raise VideoDownloadError("File not downloaded correctly")
+                    raise VideoDownloadError("Файл не был загружен корректно")
 
                 caption = get_download_caption(video_data, file_type, format_id)
 
@@ -415,29 +446,40 @@ async def process_download(callback: CallbackQuery) -> None:
                     file_id=new_file_id
                 )
 
-            except Exception:
-                info = await downloader.get_video_info(video_data['source_url'])
-                keyboard = await get_download_keyboard(video_id, info)
-                await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n❌ Ошибка при скачивании",
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
+            except Exception as e:
+                error_message = get_error_message(e)
+                try:
+                    info = await downloader.get_video_info(video_data['source_url'])
+                    keyboard = await get_download_keyboard(video_id, info)
+                    await callback.message.edit_caption(
+                        caption=f"{callback.message.caption}\n\n{error_message}",
+                        parse_mode="HTML",
+                        reply_markup=keyboard
+                    )
+                except Exception as inner_e:
+                    await callback.message.edit_caption(
+                        caption=f"{callback.message.caption}\n\n❌ Произошла ошибка при загрузке: {str(inner_e)}",
+                        parse_mode="HTML"
+                    )
 
-    except Exception:
-        pass
+    except Exception as e:
+        error_message = get_error_message(e)
+        await callback.message.answer(error_message)
 
 
 @user_router.callback_query(F.data == "size_limit")
 async def process_size_limit(callback: CallbackQuery) -> None:
-    """Handle size limit exceeded callback"""
+    """Обработка превышения лимита размера файла"""
     await callback.answer(
-        "❌ Файл слишком большой (>50MB). Выберите меньшее качество.",
+        "❌ Файл слишком большой (>50MB). Выберите меньшее качество или аудио версию.",
         show_alert=True
     )
 
 
 @user_router.message()
 async def process_unknown_message(message: Message) -> None:
-    """Handle unknown messages"""
-    await message.answer("Отправьте мне ссылку на видео, и я помогу вам его скачать.")
+    """Обработка неизвестных сообщений"""
+    await message.answer(
+        "Отправьте мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+        "и я помогу вам его скачать."
+    )

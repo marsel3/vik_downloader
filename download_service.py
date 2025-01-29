@@ -1,39 +1,18 @@
 import yt_dlp
 import asyncio
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
-class VideoFormat:
-    def __init__(self, url: str, format_id: str, ext: str, filesize: int,
-                 format_name: str, duration: int, width: int, height: int,
-                 vcodec: str = None, acodec: str = None):
-        self.url = url
-        self.format_id = format_id
-        self.ext = ext
-        self.filesize = filesize
-        self.format_name = format_name
-        self.duration = duration
-        self.width = width
-        self.height = height
-        self.vcodec = vcodec
-        self.acodec = acodec
 
-class VideoInfo:
-    def __init__(self, title: str, duration: str, thumbnail: str,
-                 author: str, formats: List[VideoFormat], source_url: str):
-        self.title = title
-        self.duration = duration
-        self.thumbnail = thumbnail
-        self.author = author
-        self.formats = formats
-        self.source_url = source_url
+class VideoDownloadError(Exception):
+    """Пользовательская ошибка для проблем с загрузкой видео"""
+    pass
 
-class BaseDownloader(ABC):
+
+class BaseDownloader:
+    """Базовый класс для загрузчиков видео"""
     def __init__(self):
-        self.ydl_opts = {}
         self.base_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -50,11 +29,8 @@ class BaseDownloader(ABC):
             }
         }
 
-    @abstractmethod
-    async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
-        pass
-
     def _safe_int(self, value: Any, default: int = 0) -> int:
+        """Безопасное преобразование в int"""
         try:
             if value is None:
                 return default
@@ -67,6 +43,7 @@ class BaseDownloader(ABC):
             return default
 
     def _safe_get_filesize(self, format_dict: Dict) -> int:
+        """Безопасное получение размера файла"""
         try:
             filesize = format_dict.get('filesize')
             if filesize is None:
@@ -76,14 +53,22 @@ class BaseDownloader(ABC):
             return 0
 
     def _normalize_duration(self, duration: Any) -> int:
+        """Нормализация длительности видео"""
         return self._safe_int(duration, 0)
 
+    async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
+        """Получение информации о видео"""
+        raise NotImplementedError()
+
+
 class YouTubeDownloader(BaseDownloader):
+    """Загрузчик для YouTube"""
     def __init__(self):
         super().__init__()
         self.ydl_opts = {
             **self.base_opts,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'cookiefile': 'cookies.txt'
         }
 
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
@@ -93,7 +78,7 @@ class YouTubeDownloader(BaseDownloader):
             )
             
             if not info:
-                return None
+                raise VideoDownloadError("Не удалось получить информацию о видео")
 
             formats = []
             duration = self._normalize_duration(info.get('duration', 0))
@@ -136,12 +121,8 @@ class YouTubeDownloader(BaseDownloader):
                 audio_size = self._safe_get_filesize(best_audio) if best_audio else 0
                 total_size = video_size + audio_size
 
-                video_url = video_fmt.get('url')
-                if not video_url and video_fmt.get('fragment_base_url'):
-                    video_url = video_fmt['fragment_base_url']
-
                 formats.append({
-                    'url': video_url,
+                    'url': video_fmt.get('url', ''),
                     'format_id': format_id,
                     'ext': video_fmt.get('ext', 'mp4'),
                     'filesize': total_size,
@@ -162,28 +143,34 @@ class YouTubeDownloader(BaseDownloader):
                 'source_url': url
             }
 
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "copyright" in error_msg:
+                raise VideoDownloadError("Видео недоступно из-за нарушения авторских прав")
+            elif "private" in error_msg:
+                raise VideoDownloadError("Это приватное видео")
+            elif "unavailable" in error_msg or "not available" in error_msg:
+                raise VideoDownloadError("Видео недоступно или было удалено")
+            elif "sign in" in error_msg:
+                raise VideoDownloadError("Видео требует авторизации")
+            elif "unable to extract" in error_msg:
+                raise VideoDownloadError("Не удалось получить видео. Возможно, оно недоступно")
+            else:
+                raise VideoDownloadError("Не удалось загрузить видео с YouTube")
         except Exception as e:
-            print(f"Error in YouTube downloader: {str(e)}")
+            print(f"Ошибка в YouTube загрузчике: {str(e)}")
             print(f"Traceback: {traceback.format_exc()}")
-            return None
+            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с YouTube: {str(e)}")
+
 
 class InstagramDownloader(BaseDownloader):
+    """Загрузчик для Instagram"""
     def __init__(self):
         super().__init__()
         self.ydl_opts = {
             **self.base_opts,
             'format': 'best',
-            'cookiefile': 'instagram.txt',
-            'extract_flat': True,
-            'ignoreerrors': True,
-            'no_color': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/'
-            }
+            'cookiefile': 'instagram.txt'
         }
 
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
@@ -193,7 +180,7 @@ class InstagramDownloader(BaseDownloader):
             )
 
             if not info:
-                return None
+                raise VideoDownloadError("Не удалось получить информацию о видео")
 
             duration = self._normalize_duration(info.get('duration', 0))
             formats = []
@@ -238,12 +225,26 @@ class InstagramDownloader(BaseDownloader):
                 'source_url': url
             }
 
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "404" in error_msg:
+                raise VideoDownloadError("Пост в Instagram не найден или удалён")
+            elif "private" in error_msg:
+                raise VideoDownloadError("Это приватный пост в Instagram")
+            elif "login" in error_msg:
+                raise VideoDownloadError("Требуется авторизация в Instagram")
+            elif "unable to extract" in error_msg:
+                raise VideoDownloadError("Не удалось получить видео из Instagram. Возможно, пост недоступен")
+            else:
+                raise VideoDownloadError("Не удалось загрузить видео из Instagram")
         except Exception as e:
-            print(f"Error in Instagram downloader: {str(e)}")
+            print(f"Ошибка в Instagram загрузчике: {str(e)}")
             print(f"Traceback: {traceback.format_exc()}")
-            return None
+            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с Instagram: {str(e)}")
+
 
 class TikTokDownloader(BaseDownloader):
+    """Загрузчик для TikTok"""
     def __init__(self):
         super().__init__()
         self.ydl_opts = {
@@ -258,7 +259,7 @@ class TikTokDownloader(BaseDownloader):
             )
 
             if not info:
-                return None
+                raise VideoDownloadError("Не удалось получить информацию о видео")
 
             duration = self._normalize_duration(info.get('duration', 0))
             formats = []
@@ -297,12 +298,26 @@ class TikTokDownloader(BaseDownloader):
                 'source_url': url
             }
 
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "404" in error_msg:
+                raise VideoDownloadError("Видео в TikTok не найдено или было удалено")
+            elif "private" in error_msg:
+                raise VideoDownloadError("Это приватное видео TikTok")
+            elif "blocked" in error_msg:
+                raise VideoDownloadError("Видео заблокировано в вашем регионе")
+            elif "unable to extract" in error_msg:
+                raise VideoDownloadError("Не удалось получить видео из TikTok. Возможно, видео недоступно")
+            else:
+                raise VideoDownloadError("Не удалось загрузить видео из TikTok")
         except Exception as e:
-            print(f"Error in TikTok downloader: {str(e)}")
+            print(f"Ошибка в TikTok загрузчике: {str(e)}")
             print(f"Traceback: {traceback.format_exc()}")
-            return None
+            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с TikTok: {str(e)}")
+
 
 class VKDownloader(BaseDownloader):
+    """Загрузчик для VK"""
     def __init__(self):
         super().__init__()
         self.ydl_opts = {
@@ -317,7 +332,7 @@ class VKDownloader(BaseDownloader):
             )
 
             if not info:
-                return None
+                raise VideoDownloadError("Не удалось получить информацию о видео")
 
             duration = self._normalize_duration(info.get('duration', 0))
             formats = []
@@ -326,7 +341,7 @@ class VKDownloader(BaseDownloader):
                 if not f or not f.get('url'):
                     continue
 
-                height = self._safe_int(f.get('height'), 0)
+                height = self._safe_int(f.get('height', 0))
                 if height > 0:
                     formats.append({
                         'url': f['url'],
@@ -348,31 +363,29 @@ class VKDownloader(BaseDownloader):
                 'source_url': url
             }
 
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "deleted" in error_msg:
+                raise VideoDownloadError("Это видео было удалено из VK")
+            elif "private" in error_msg:
+                raise VideoDownloadError("Это приватное видео VK")
+            elif "not available" in error_msg or "unable to extract" in error_msg:
+                raise VideoDownloadError("Видео ВКонтакте недоступно")
+            elif "404" in error_msg:
+                raise VideoDownloadError("Видео не найдено")
+            else:
+                raise VideoDownloadError("Не удалось загрузить видео из VK")
         except Exception as e:
-            print(f"Error in VK downloader: {str(e)}")
+            print(f"Ошибка в VK загрузчике: {str(e)}")
             print(f"Traceback: {traceback.format_exc()}")
-            return None
+            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с VK: {str(e)}")
+
 
 class Downloader:
+    """Основной класс загрузчика"""
     def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=4)
         self._cache = {}
         self._cache_ttl = timedelta(minutes=5)
-        self.base_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'socket_timeout': 30,
-            'retries': 5,
-            'no_check_certificate': True,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Connection': 'keep-alive'
-            }
-        }
         
         # Инициализация загрузчиков для разных платформ
         self._downloaders = {
@@ -395,13 +408,7 @@ class Downloader:
         return None
 
     async def get_video_info(self, url: str) -> Optional[Dict]:
-        """
-        Получает информацию о видео с учетом платформы
-        Args:
-            url: URL видео
-        Returns:
-            Dict с информацией о видео или None в случае ошибки
-        """
+        """Получает информацию о видео с учетом платформы"""
         try:
             now = datetime.now()
             
@@ -416,14 +423,13 @@ class Downloader:
             # Определяем платформу
             platform = self._get_platform(url)
             if not platform:
-                print(f"Unsupported platform for URL: {url}")
-                return None
+                raise VideoDownloadError("Неподдерживаемая платформа")
 
             # Получаем соответствующий загрузчик
             downloader = self._downloaders[platform]
             
             # Устанавливаем специфичные для платформы опции
-            ydl_opts = {**self.base_opts, **downloader.ydl_opts}
+            ydl_opts = {**downloader.base_opts, **downloader.ydl_opts}
             
             # Получаем информацию о видео
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -436,10 +442,12 @@ class Downloader:
                     
                 return None
 
+        except VideoDownloadError:
+            raise
         except Exception as e:
-            print(f"Error in get_video_info: {str(e)}")
-            print(f"Full traceback: {traceback.format_exc()}")
-            return None
+            print(f"Неожиданная ошибка в get_video_info: {str(e)}")
+            print(f"Полный traceback: {traceback.format_exc()}")
+            raise VideoDownloadError(f"Неожиданная ошибка при получении информации о видео: {str(e)}")
 
     def clear_cache(self):
         """Очищает весь кэш"""
@@ -449,6 +457,7 @@ class Downloader:
         """Удаляет конкретный URL из кэша"""
         if url in self._cache:
             del self._cache[url]
+
 
 # Создаем единственный экземпляр загрузчика
 downloader = Downloader()
