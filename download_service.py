@@ -170,7 +170,15 @@ class InstagramDownloader(BaseDownloader):
         self.ydl_opts = {
             **self.base_opts,
             'format': 'best',
-            'cookiefile': 'instagram.txt'
+            'cookiefile': 'instagram.txt',
+            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'http_headers': {
+                **self.base_opts['http_headers'],
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://www.instagram.com',
+                'Referer': 'https://www.instagram.com/',
+            }
         }
 
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
@@ -249,7 +257,18 @@ class TikTokDownloader(BaseDownloader):
         super().__init__()
         self.ydl_opts = {
             **self.base_opts,
-            'format': 'best'
+            'format': 'best',
+            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'http_headers': {
+                **self.base_opts['http_headers'],
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://www.tiktok.com',
+                'Referer': 'https://www.tiktok.com/',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty'
+            }
         }
 
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:

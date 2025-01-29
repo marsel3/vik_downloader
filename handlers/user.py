@@ -127,12 +127,23 @@ async def handle_rate_limit(message: Message, remaining_time: int) -> None:
     )
 
 
+
 async def validate_and_prepare_url(message: Message) -> Optional[Tuple[str, str]]:
     """Проверка и подготовка URL"""
     if not message.text:
         return None
 
-    url = message.text.strip()
+    # Очищаем URL от эмодзи и лишних пробелов
+    url = ''.join(c for c in message.text if c.isprintable() and not c.isspace())
+    
+    # Проверяем есть ли в тексте URL
+    import re
+    url_pattern = r'https?://[^\s<>"\']+'
+    match = re.search(url_pattern, url)
+    if not match:
+        return None
+        
+    url = match.group(0)
     platform = get_platform(url)
     
     if not platform:
@@ -154,14 +165,35 @@ def get_platform(url: str) -> Optional[str]:
 async def download_audio(url: str, output_path: str) -> bool:
     """Загрузка аудио из видео"""
     try:
+        is_tiktok = 'tiktok.com' in url.lower()
+        is_instagram = 'instagram.com' in url.lower()
+        
+        proxy_settings = {
+            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        }
+
+        # Общие настройки для отключения прогресса
         ydl_opts = {
             'format': 'worstaudio/worst',
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True,
+            'noprogress': True,
+            'progress_hooks': [],
+            'logger': None,
             'extract_audio': True,
             'audio_format': 'mp3',
         }
+
+        if is_tiktok or is_instagram:
+            ydl_opts.update(proxy_settings)
+            if is_instagram:
+                ydl_opts['cookiefile'] = 'instagram.txt'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -265,40 +297,70 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
 async def download_video(url: str, output_path: str, format_id: str, is_tiktok: bool = False,
                         is_youtube: bool = False, is_instagram: bool = False) -> None:
     """Загрузка видео с учетом особенностей платформы"""
+    
+    # Базовые настройки прокси и заголовков
+    proxy_settings = {
+        'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive'
+        }
+    }
+
+    # Общие настройки для отключения прогресса
+    common_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noprogress': True,
+        'progress_hooks': [], # Можно добавить свои функции для отслеживания прогресса
+        'logger': None
+    }
+
     if is_tiktok:
         ydl_opts = {
+            **common_opts,
             'format': 'best',
             'outtmpl': output_path,
-            'quiet': True,
-            'no_warnings': True,
-            'merge_output_format': 'mp4'
+            'merge_output_format': 'mp4',
+            **proxy_settings,
+            'http_headers': {
+                **proxy_settings['http_headers'],
+                'Origin': 'https://www.tiktok.com',
+                'Referer': 'https://www.tiktok.com/'
+            }
+        }
+    elif is_instagram:
+        ydl_opts = {
+            **common_opts,
+            'format': 'best[ext=mp4]',
+            'outtmpl': output_path,
+            'cookiefile': 'instagram.txt',
+            **proxy_settings,
+            'http_headers': {
+                **proxy_settings['http_headers'],
+                'Origin': 'https://www.instagram.com',
+                'Referer': 'https://www.instagram.com/'
+            }
         }
     elif is_youtube:
         ydl_opts = {
+            **common_opts,
             'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
             'outtmpl': output_path,
             'merge_output_format': 'mp4',
             'fragment_retries': 50,
             'retries': 50,
             'socket_timeout': 120,
-            'quiet': True,
-            'no_warnings': True,
             'cookiefile': 'cookies.txt',
             'http_chunk_size': 10485760
         }
-    elif is_instagram:
-        ydl_opts = {
-            'format': 'best[ext=mp4]',
-            'outtmpl': output_path,
-            'quiet': True,
-            'no_warnings': True,
-        }
     else:
         ydl_opts = {
+            **common_opts,
             'format': f'best[height<={format_id}]',
-            'outtmpl': output_path,
-            'quiet': True,
-            'no_warnings': True
+            'outtmpl': output_path
         }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -308,8 +370,9 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
                 lambda: ydl.download([url])
             )
         except Exception as e:
+            print(f"Ошибка при загрузке видео: {str(e)}")
             raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
-
+        
 
 @user_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
