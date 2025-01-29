@@ -1,8 +1,9 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 import asyncio
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
 import yt_dlp
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
@@ -19,7 +20,7 @@ from database import (
     get_video_by_id
 )
 from keyboards import get_download_keyboard
-from download_service import downloader
+from download_service import downloader, VideoDownloadError
 
 
 SUPPORTED_PLATFORMS = {
@@ -42,16 +43,59 @@ class VideoDownloadError(Exception):
     pass
 
 
+class AntiSpam:
+    """Система защиты от спама"""
+    def __init__(self):
+        # История запросов пользователей: user_id -> [timestamp1, timestamp2, ...]
+        self.user_requests = defaultdict(list)
+        self.max_requests = 5  # максимум запросов в окне
+        self.time_window = 60  # окно в секундах
+        self.block_duration = 300  # длительность блокировки в секундах
+        self.blocked_users = {}  # user_id -> время окончания блокировки
+
+    def is_blocked(self, user_id: int) -> Tuple[bool, Optional[int]]:
+        """Проверка блокировки пользователя"""
+        if user_id in self.blocked_users:
+            block_end_time = self.blocked_users[user_id]
+            if datetime.now() < block_end_time:
+                remaining = int((block_end_time - datetime.now()).total_seconds())
+                return True, remaining
+            else:
+                del self.blocked_users[user_id]
+        return False, None
+
+    def add_request(self, user_id: int) -> bool:
+        """Добавление нового запроса и проверка лимитов"""
+        now = datetime.now()
+        user_times = self.user_requests[user_id]
+        
+        # Очищаем старые запросы
+        user_times = [time for time in user_times 
+                     if now - time < timedelta(seconds=self.time_window)]
+        self.user_requests[user_id] = user_times
+
+        # Проверяем количество запросов
+        if len(user_times) >= self.max_requests:
+            self.blocked_users[user_id] = now + timedelta(seconds=self.block_duration)
+            return False
+
+        user_times.append(now)
+        return True
+
+
+# Создаем экземпляр анти-спам системы
+anti_spam = AntiSpam()
+
+
 async def safe_delete_message(message: Message) -> None:
     """Безопасное удаление сообщения с обработкой ошибок"""
     try:
         await message.delete()
     except TelegramAPIError:
-        # Игнорируем ошибки при удалении сообщения
         return
 
 
-def get_error_message(error: Exception) -> str:
+async def get_error_message(error: Exception) -> str:
     """Получение понятного пользователю сообщения об ошибке"""
     error_text = str(error).lower()
     
@@ -70,7 +114,41 @@ def get_error_message(error: Exception) -> str:
     elif "too large" in error_text:
         return "❌ Файл слишком большой для загрузки в Telegram (максимум 50MB)."
     else:
-        return f"❌ Произошла ошибка при обработке видео: {str(error)}"
+        return f"❌ Произошла ошибка при обработке видео"
+
+
+async def handle_rate_limit(message: Message, remaining_time: int) -> None:
+    """Обработка превышения лимита запросов"""
+    minutes = remaining_time // 60
+    seconds = remaining_time % 60
+    await message.answer(
+        f"⚠️ Слишком много запросов! Пожалуйста, подождите {minutes}:{seconds:02d} "
+        "прежде чем отправлять новые ссылки."
+    )
+
+
+async def validate_and_prepare_url(message: Message) -> Optional[Tuple[str, str]]:
+    """Проверка и подготовка URL"""
+    if not message.text:
+        return None
+
+    url = message.text.strip()
+    platform = get_platform(url)
+    
+    if not platform:
+        platforms = ", ".join(SUPPORTED_PLATFORMS.keys())
+        await message.answer(f"❌ Неподдерживаемая платформа. Поддерживаются: {platforms}")
+        return None
+
+    return url, platform
+
+
+def get_platform(url: str) -> Optional[str]:
+    """Определение платформы из URL"""
+    for domain, platform in SUPPORTED_PLATFORMS.items():
+        if domain in url.lower():
+            return platform
+    return None
 
 
 async def download_audio(url: str, output_path: str) -> bool:
@@ -150,106 +228,6 @@ def get_download_caption(info: Dict[str, Any], file_type: str, quality: Optional
         f"⏱ Продолжительность: {format_duration(duration)}"
         f"{quality_str}"
     )
-
-
-def get_platform(url: str) -> Optional[str]:
-    """Определение платформы из URL"""
-    for domain, platform in SUPPORTED_PLATFORMS.items():
-        if domain in url.lower():
-            return platform
-    return None
-
-
-@user_router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
-    """Обработка команды /start"""
-    try:
-        if not await check_user_exists(message.from_user.id):
-            await add_user(message.from_user.id, message.from_user.username)
-        await message.answer(
-            "👋 Привет! Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
-            "и я помогу тебе его скачать."
-        )
-    except Exception as e:
-        await message.answer(f"❌ Произошла ошибка при запуске бота: {str(e)}")
-
-
-@user_router.message(
-    lambda message: message.text and any(
-        platform in message.text.lower() 
-        for platform in SUPPORTED_PLATFORMS.keys()
-    )
-)
-async def process_video_url(message: Message) -> None:
-    """Обработка сообщения с URL видео"""
-    processing_msg = None
-    try:
-        url = message.text.strip()
-        platform = get_platform(url)
-        
-        if not platform:
-            platforms = ", ".join(SUPPORTED_PLATFORMS.keys())
-            await message.answer(f"❌ Неподдерживаемая платформа. Поддерживаются: {platforms}")
-            return
-
-        processing_msg = await message.answer("⏳ Получаю информацию о видео...")
-        
-        video_info = await get_video(url)
-        info = await downloader.get_video_info(url)
-        
-        if not info:
-            if processing_msg:
-                await processing_msg.edit_text("❌ Не удалось получить информацию о видео. Проверьте ссылку.")
-            return
-
-        video_data = {
-            'source_url': url,
-            'title': info.get('title', 'Без названия'),
-            'author': info.get('author', 'Unknown'),
-            'duration': info.get('duration', '0'),
-            'thumbnail': info.get('thumbnail', ''),
-            'platform': platform
-        }
-
-        if not video_info:
-            video_id = await add_video(
-                url=url,
-                title=video_data['title'],
-                author=video_data['author'],
-                duration=video_data['duration'],
-                thumbnail=video_data['thumbnail']
-            )
-        else:
-            video_id = video_info['video_id']
-
-        caption = get_initial_caption(video_data)
-        keyboard = await get_download_keyboard(video_id, info)
-
-        if processing_msg:
-            await safe_delete_message(processing_msg)
-
-        try:
-            await message.answer_photo(
-                photo=video_data['thumbnail'],
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
-        except TelegramAPIError:
-            await message.answer(
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
-            
-    except Exception as e:
-        error_message = get_error_message(e)
-        
-        if processing_msg:
-            try:
-                await processing_msg.edit_text(error_message)
-            except TelegramAPIError:
-                await message.answer(error_message)
 
 
 async def send_large_video(message: Message, video_path: str, caption: str) -> Optional[Message]:
@@ -333,19 +311,146 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
             raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
 
 
+@user_router.message(Command("start"))
+async def cmd_start(message: Message) -> None:
+    """Обработка команды /start"""
+    try:
+        if not await check_user_exists(message.from_user.id):
+            await add_user(message.from_user.id, message.from_user.username)
+        await message.answer(
+            "👋 Привет! Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+            "и я помогу тебе его скачать."
+        )
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка при запуске бота: {str(e)}")
+
+
+@user_router.message(
+    lambda message: message.text and any(
+        platform in message.text.lower() 
+        for platform in SUPPORTED_PLATFORMS.keys()
+    )
+)
+async def process_video_url(message: Message) -> None:
+    """Обработка сообщения с URL видео"""
+    # Проверка на спам
+    user_id = message.from_user.id
+    is_blocked, remaining_time = anti_spam.is_blocked(user_id)
+    if is_blocked:
+        await handle_rate_limit(message, remaining_time)
+        return
+
+    if not anti_spam.add_request(user_id):
+        await handle_rate_limit(message, anti_spam.block_duration)
+        return
+
+    processing_msg = None
+    try:
+        # Валидация URL
+        url_data = await validate_and_prepare_url(message)
+        if not url_data:
+            return
+        
+        url, platform = url_data
+        processing_msg = await message.answer("⏳ Получаю информацию о видео...")
+        
+        # Получение информации о видео
+        video_info = await get_video(url)
+        info = await downloader.get_video_info(url)
+        
+        if not info:
+            if processing_msg:
+                await processing_msg.edit_text("❌ Не удалось получить информацию о видео. Проверьте ссылку.")
+            return
+
+        # Подготовка данных
+        video_data = {
+            'source_url': url,
+            'title': info.get('title', 'Без названия'),
+            'author': info.get('author', 'Unknown'),
+            'duration': info.get('duration', '0'),
+            'thumbnail': info.get('thumbnail', ''),
+            'platform': platform
+        }
+
+        if not video_info:
+            video_id = await add_video(
+                url=url,
+                title=video_data['title'],
+                author=video_data['author'],
+                duration=video_data['duration'],
+                thumbnail=video_data['thumbnail']
+            )
+        else:
+            video_id = video_info['video_id']
+
+        if processing_msg:
+            await safe_delete_message(processing_msg)
+
+        await send_video_preview(message, video_data, video_id, info)
+            
+    except VideoDownloadError as e:
+        error_message = str(e)
+        if processing_msg:
+            try:
+                await processing_msg.edit_text(error_message)
+            except TelegramAPIError:
+                await message.answer(error_message)
+    except Exception as e:
+        error_message = "❌ Произошла ошибка при обработке видео"
+        if processing_msg:
+            try:
+                await processing_msg.edit_text(error_message)
+            except TelegramAPIError:
+                await message.answer(error_message)
+
+
+async def send_video_preview(message: Message, video_data: Dict, video_id: int, info: Dict) -> None:
+    """Отправка превью видео"""
+    caption = get_initial_caption(video_data)
+    keyboard = await get_download_keyboard(video_id, info)
+
+    try:
+        await message.answer_photo(
+            photo=video_data['thumbnail'],
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    except TelegramAPIError:
+        await message.answer(
+            text=caption,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery) -> None:
     """Обработка нажатий на кнопки загрузки"""
     await callback.answer()
     
-    try:
-        _, video_id, format_id, file_type = callback.data.split("_")
-        video_id = int(video_id)
-    except ValueError as e:
-        await callback.message.answer("❌ Неверный формат данных кнопки")
+    # Проверка на спам
+    user_id = callback.from_user.id
+    is_blocked, remaining_time = anti_spam.is_blocked(user_id)
+    if is_blocked:
+        await handle_rate_limit(callback.message, remaining_time)
+        return
+
+    if not anti_spam.add_request(user_id):
+        await handle_rate_limit(callback.message, anti_spam.block_duration)
         return
     
     try:
+        # Валидация данных
+        download_data = await validate_download_data(callback.data)
+        if not download_data:
+            await callback.message.answer("❌ Неверный формат данных кнопки")
+            return
+            
+        video_id, format_id, file_type = download_data
+        
+        # Получение информации о видео
         file_info = await get_file(video_id, format_id, file_type)
         db_video = await get_video_by_id(video_id)
         
@@ -361,6 +466,7 @@ async def process_download(callback: CallbackQuery) -> None:
             'thumbnail': db_video['thumbnail_url']
         }
 
+        # Проверяем кэш
         if file_info:
             try:
                 caption = get_download_caption(video_data, file_type, format_id)
@@ -379,92 +485,125 @@ async def process_download(callback: CallbackQuery) -> None:
                     )
                 await safe_delete_message(callback.message)
                 return
-            except TelegramAPIError as e:
-                print(f"Ошибка при отправке файла из кэша: {str(e)}")
+            except TelegramAPIError:
+                pass
 
-        with tempfile.TemporaryDirectory(prefix=TEMP_FILE_PREFIX) as temp_dir:
-            try:
-                await callback.message.edit_caption(
-                    caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю файл... ⌛️📥",
-                    parse_mode="HTML",
-                    reply_markup=None
-                )
+        # Загрузка нового файла
+        await process_new_download(callback, video_data, video_id, format_id, file_type)
 
-                file_name = f"video_{int(datetime.now().timestamp())}"
-                temp_path = Path(temp_dir) / file_name
-
-                is_tiktok = 'tiktok.com' in db_video['source_url']
-                is_youtube = 'youtube.com' in db_video['source_url'] or 'youtu.be' in db_video['source_url']
-                is_instagram = 'instagram.com' in db_video['source_url']
-
-                if file_type == 'video':
-                    temp_path = temp_path.with_suffix('.mp4')
-                    await download_video(
-                        db_video['source_url'],
-                        str(temp_path),
-                        format_id,
-                        is_tiktok,
-                        is_youtube,
-                        is_instagram
-                    )
-                else:
-                    temp_path = temp_path.with_suffix('.mp3')
-                    success = await download_audio(video_data['source_url'], str(temp_path))
-                    if not success:
-                        raise VideoDownloadError("Не удалось загрузить аудио файл")
-
-                if not temp_path.exists() or temp_path.stat().st_size == 0:
-                    raise VideoDownloadError("Файл не был загружен корректно")
-
-                caption = get_download_caption(video_data, file_type, format_id)
-
-                if file_type == 'video':
-                    msg = await send_large_video(callback.message, str(temp_path), caption)
-                    file_id = msg.video.file_id
-                else:
-                    msg = await callback.message.answer_audio(
-                        audio=FSInputFile(str(temp_path)),
-                        caption=caption,
-                        parse_mode="HTML"
-                    )
-                    file_id = msg.audio.file_id
-
-                await safe_delete_message(callback.message)
-
-                file_size = temp_path.stat().st_size
-                new_file_id = await add_file(
-                    video_id=video_id,
-                    telegram_file_id=file_id,
-                    file_type=file_type,
-                    size=file_size,
-                    quality=format_id
-                )
-
-                await add_download(
-                    user_id=callback.from_user.id,
-                    video_id=video_id,
-                    file_id=new_file_id
-                )
-
-            except Exception as e:
-                error_message = get_error_message(e)
-                try:
-                    info = await downloader.get_video_info(video_data['source_url'])
-                    keyboard = await get_download_keyboard(video_id, info)
-                    await callback.message.edit_caption(
-                        caption=f"{callback.message.caption}\n\n{error_message}",
-                        parse_mode="HTML",
-                        reply_markup=keyboard
-                    )
-                except Exception as inner_e:
-                    await callback.message.edit_caption(
-                        caption=f"{callback.message.caption}\n\n❌ Произошла ошибка при загрузке: {str(inner_e)}",
-                        parse_mode="HTML"
-                    )
-
+    except VideoDownloadError as e:
+        await handle_download_error(callback, str(e), video_id)
     except Exception as e:
-        error_message = get_error_message(e)
-        await callback.message.answer(error_message)
+        await handle_download_error(callback, "Произошла ошибка при скачивании", video_id)
+
+
+async def validate_download_data(callback_data: str) -> Optional[Tuple[int, str, str]]:
+    """Валидация данных callback"""
+    try:
+        _, video_id, format_id, file_type = callback_data.split("_")
+        return int(video_id), format_id, file_type
+    except ValueError:
+        return None
+
+
+async def process_new_download(callback: CallbackQuery, video_data: Dict, 
+                             video_id: int, format_id: str, file_type: str) -> None:
+    """Обработка новой загрузки"""
+    with tempfile.TemporaryDirectory(prefix=TEMP_FILE_PREFIX) as temp_dir:
+        try:
+            await callback.message.edit_caption(
+                caption=f"{callback.message.caption}\n\n📥⌛️ Скачиваю файл... ⌛️📥",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+
+            file_name = f"video_{int(datetime.now().timestamp())}"
+            temp_path = Path(temp_dir) / file_name
+
+            is_tiktok = 'tiktok.com' in video_data['source_url']
+            is_youtube = 'youtube.com' in video_data['source_url'] or 'youtu.be' in video_data['source_url']
+            is_instagram = 'instagram.com' in video_data['source_url']
+
+            if file_type == 'video':
+                temp_path = temp_path.with_suffix('.mp4')
+                await download_video(
+                    video_data['source_url'],
+                    str(temp_path),
+                    format_id,
+                    is_tiktok,
+                    is_youtube,
+                    is_instagram
+                )
+            else:
+                temp_path = temp_path.with_suffix('.mp3')
+                success = await download_audio(video_data['source_url'], str(temp_path))
+                if not success:
+                    raise VideoDownloadError("Не удалось загрузить аудио файл")
+
+            if not temp_path.exists() or temp_path.stat().st_size == 0:
+                raise VideoDownloadError("Файл не был загружен корректно")
+
+            # Отправка файла
+            caption = get_download_caption(video_data, file_type, format_id)
+            msg = await send_file(callback.message, temp_path, caption, file_type)
+            
+            # Сохранение в базу
+            await save_file_info(msg, video_id, file_type, format_id, temp_path, callback.from_user.id)
+            await safe_delete_message(callback.message)
+
+        except Exception as e:
+            raise VideoDownloadError(f"Ошибка при загрузке: {str(e)}")
+
+
+async def send_file(message: Message, file_path: Path, caption: str, 
+                   file_type: str) -> Message:
+    """Отправка файла в Telegram"""
+    if file_type == 'video':
+        return await send_large_video(message, str(file_path), caption)
+    else:
+        return await message.answer_audio(
+            audio=FSInputFile(str(file_path)),
+            caption=caption,
+            parse_mode="HTML"
+        )
+
+
+async def save_file_info(message: Message, video_id: int, file_type: str, 
+                        format_id: str, file_path: Path, user_id: int) -> None:
+    """Сохранение информации о файле в базу"""
+    file_id = message.video.file_id if file_type == 'video' else message.audio.file_id
+    file_size = file_path.stat().st_size
+    
+    new_file_id = await add_file(
+        video_id=video_id,
+        telegram_file_id=file_id,
+        file_type=file_type,
+        size=file_size,
+        quality=format_id
+    )
+
+    await add_download(
+        user_id=user_id,
+        video_id=video_id,
+        file_id=new_file_id
+    )
+
+
+async def handle_download_error(callback: CallbackQuery, error_message: str, video_id: int) -> None:
+    """Обработка ошибок при загрузке"""
+    try:
+        info = await downloader.get_video_info(callback.message.caption.split('\n')[1].strip())
+        keyboard = await get_download_keyboard(video_id, info)
+        await callback.message.edit_caption(
+            caption=f"{callback.message.caption}\n\n❌ {error_message}",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    except Exception:
+        await callback.message.edit_caption(
+            caption=f"{callback.message.caption}\n\n❌ {error_message}",
+            parse_mode="HTML"
+        )
 
 
 @user_router.callback_query(F.data == "size_limit")
