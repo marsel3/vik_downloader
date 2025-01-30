@@ -5,3 +5,7 @@ DB_USER = 'mars'
 DB_PASS = 'd148b3bc-b5e1-4ed6-ba80-418220f4fdd5'
 DB_NAME = 'vik_downloader'
 DB_PORT = 5433
+
+
+CHANNEL_ID = -1001922368250
+CHANNEL_URL = 'https://t.me/+RiLMKsAKoEMxOWEy'

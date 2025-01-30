@@ -1,5 +1,34 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_file
+from config import CHANNEL_ID, CHANNEL_URL
+
+
+async def check_subscription(bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception:
+        return False
+
+
+def get_subscribe_keyboard() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📢 Подписаться на канал",
+                    url=CHANNEL_URL
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Проверить подписку",
+                    callback_data="check_subscription"
+                )
+            ]
+        ]
+    )
+    return keyboard
 
 
 def estimate_video_size(duration: float, quality: str) -> int:

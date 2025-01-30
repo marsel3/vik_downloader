@@ -19,7 +19,7 @@ from database import (
     add_download,
     get_video_by_id
 )
-from keyboards import get_download_keyboard
+from keyboards import check_subscription, get_download_keyboard, get_subscribe_keyboard
 from download_service import downloader, VideoDownloadError
 
 
@@ -43,6 +43,24 @@ class VideoDownloadError(Exception):
     pass
 
 
+@user_router.callback_query(F.data == "check_subscription")
+async def check_subscription_callback(callback: CallbackQuery) -> None:
+    """Обработка проверки подписки"""
+    is_subscribed = await check_subscription(callback.bot, callback.from_user.id)
+    
+    if is_subscribed:
+        await callback.message.delete()
+        await callback.message.answer(
+            "👋 Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+            "и я помогу тебе его скачать."
+        )
+    else:
+        await callback.answer(
+            "❌ Вы все еще не подписались на канал",
+            show_alert=True
+        )
+        
+        
 class AntiSpam:
     """Система защиты от спама"""
     def __init__(self):
@@ -396,7 +414,14 @@ async def cmd_start(message: Message) -> None:
 )
 async def process_video_url(message: Message) -> None:
     """Обработка сообщения с URL видео"""
-    # Проверка на спам
+    is_subscribed = await check_subscription(message.bot, message.from_user.id)
+    if not is_subscribed:
+        await message.answer(
+            "⚠️ Для использования бота необходимо подписаться на наш канал.",
+            reply_markup=get_subscribe_keyboard()
+        )
+        return
+    
     user_id = message.from_user.id
     is_blocked, remaining_time = anti_spam.is_blocked(user_id)
     if is_blocked:
