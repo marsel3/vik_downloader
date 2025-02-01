@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
+from config import SESSION_ID
 from database import (
     check_user_exists,
     add_user,
@@ -66,7 +67,7 @@ class AntiSpam:
     def __init__(self):
         # История запросов пользователей: user_id -> [timestamp1, timestamp2, ...]
         self.user_requests = defaultdict(list)
-        self.max_requests = 5  # максимум запросов в окне
+        self.max_requests = 30  # максимум запросов в окне
         self.time_window = 60  # окно в секундах
         self.block_duration = 300  # длительность блокировки в секундах
         self.blocked_users = {}  # user_id -> время окончания блокировки
@@ -320,13 +321,12 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
     proxy_settings = {
         'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Connection': 'keep-alive'
         }
     }
-
     # Общие настройки для отключения прогресса
     common_opts = {
         'quiet': True,
@@ -354,13 +354,17 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
             **common_opts,
             'format': 'best[ext=mp4]',
             'outtmpl': output_path,
-            'cookiefile': 'instagram.txt',
+            'cookiefile': 'instagram.txt',  # Этот файл должен содержать актуальные cookies
             **proxy_settings,
             'http_headers': {
                 **proxy_settings['http_headers'],
                 'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/'
-            }
+                'Referer': 'https://www.instagram.com/',
+                'Cookie': f'sessionid={SESSION_ID}'  # Добавьте сюда полученный sessionid
+            },
+            'extract_flat': True,
+            'no_check_certificate': True,
+            'ignoreerrors': True
         }
     elif is_youtube:
         ydl_opts = {

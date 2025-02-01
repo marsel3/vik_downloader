@@ -4,6 +4,8 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 
+from config import SESSION_ID
+
 
 class VideoDownloadError(Exception):
     """Пользовательская ошибка для проблем с загрузкой видео"""
@@ -164,7 +166,6 @@ class YouTubeDownloader(BaseDownloader):
 
 
 class InstagramDownloader(BaseDownloader):
-    """Загрузчик для Instagram"""
     def __init__(self):
         super().__init__()
         self.ydl_opts = {
@@ -178,6 +179,8 @@ class InstagramDownloader(BaseDownloader):
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Origin': 'https://www.instagram.com',
                 'Referer': 'https://www.instagram.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Cookie': f'sessionid={SESSION_ID}'  # Добавьте актуальный sessionid
             }
         }
 

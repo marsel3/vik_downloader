@@ -3,6 +3,9 @@ from database import get_file
 from config import CHANNEL_ID, CHANNEL_URL
 
 
+MAX_FILE_SIZE = 2000 * 1024 * 1024
+
+
 async def check_subscription(bot, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
@@ -79,7 +82,7 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
     audio_size = audio_format.get('filesize', 0) if audio_format else estimate_video_size(duration, 'audio')
     
     # Аудио кнопка
-    if audio_size < 50 * 1024 * 1024:  # Меньше 50MB
+    if audio_size < MAX_FILE_SIZE:  # Меньше 50MB
         keyboard.append([
             InlineKeyboardButton(
                 text=f"🎵 audio / {format_size(audio_size)} {'⚡️' if cached_audio else ''}",
@@ -103,7 +106,7 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
             size = best_format.get('filesize', 0)
             cached_video = await get_file(video_id, '720', 'video')
             
-            if size < 50 * 1024 * 1024:  # Меньше 50MB
+            if size < MAX_FILE_SIZE:  # Меньше 50MB
                 keyboard.append([
                     InlineKeyboardButton(
                         text=f"📹 HD / {format_size(size)} {'⚡️' if cached_video else ''}",
@@ -141,7 +144,7 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
                 
                 cached_video = await get_file(video_id, quality, 'video')
                 
-                if size < 50 * 1024 * 1024:  # Меньше 50MB
+                if size < MAX_FILE_SIZE:  # Меньше 50MB
                     keyboard.append([
                         InlineKeyboardButton(
                             text=f"📹 {resolution} / {format_size(size)} {'⚡️' if cached_video else ''}",
