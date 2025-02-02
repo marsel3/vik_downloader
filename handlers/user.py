@@ -9,7 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
-from config import SESSION_ID
+from config import instagram_proxy, tik_tok_proxy
 from database import (
     check_user_exists,
     add_user,
@@ -188,7 +188,7 @@ async def download_audio(url: str, output_path: str) -> bool:
         is_instagram = 'instagram.com' in url.lower()
         
         proxy_settings = {
-            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'proxy': instagram_proxy if is_instagram else tik_tok_proxy,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': '*/*',
@@ -207,15 +207,24 @@ async def download_audio(url: str, output_path: str) -> bool:
             'logger': None,
             'extract_audio': True,
             'audio_format': 'mp3',
+            'no_check_certificate': True,  # Отключаем проверку SSL
+            'nocheckcertificate': True,    # Дублируем для надёжности
         }
 
         if is_tiktok or is_instagram:
             ydl_opts.update(proxy_settings)
             if is_instagram:
-                ydl_opts['cookiefile'] = 'instagram.txt'
+                ydl_opts.update({
+                    'cookiefile': 'instagram.txt',
+                    'socket_timeout': 30,
+                    'retries': 5
+                })
+        
+        # Чистим URL от эмодзи и лишних символов
+        clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            ydl.download([clean_url])
             return True
     except Exception as e:
         print(f"Ошибка при загрузке аудио: {str(e)}")
@@ -319,7 +328,7 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
     
     # Базовые настройки прокси и заголовков
     proxy_settings = {
-        'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+        'proxy': instagram_proxy,  # Используем instagram_proxy вместо хардкода
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept': '*/*',
@@ -332,9 +341,16 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
         'quiet': True,
         'no_warnings': True,
         'noprogress': True,
-        'progress_hooks': [], # Можно добавить свои функции для отслеживания прогресса
-        'logger': None
+        'progress_hooks': [],
+        'logger': None,
+        'no_check_certificate': True,  # Отключаем проверку SSL
+        'nocheckcertificate': True,    # Дублируем для надёжности
+        'socket_timeout': 30,
+        'retries': 5
     }
+
+    # Чистим URL от эмодзи и лишних символов
+    clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
 
     if is_tiktok:
         ydl_opts = {
@@ -354,17 +370,15 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
             **common_opts,
             'format': 'best[ext=mp4]',
             'outtmpl': output_path,
-            'cookiefile': 'instagram.txt',  # Этот файл должен содержать актуальные cookies
+            'cookiefile': 'instagram.txt',
             **proxy_settings,
             'http_headers': {
                 **proxy_settings['http_headers'],
                 'Origin': 'https://www.instagram.com',
                 'Referer': 'https://www.instagram.com/',
-                'Cookie': f'sessionid={SESSION_ID}'  # Добавьте сюда полученный sessionid
             },
-            'extract_flat': True,
-            'no_check_certificate': True,
-            'ignoreerrors': True
+            'extract_flat': False,      # Изменено с True на False
+            'ignoreerrors': False,      # Изменено с True на False для получения полной ошибки
         }
     elif is_youtube:
         ydl_opts = {
@@ -389,12 +403,12 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
         try:
             await asyncio.get_event_loop().run_in_executor(
                 None, 
-                lambda: ydl.download([url])
+                lambda: ydl.download([clean_url])
             )
         except Exception as e:
             print(f"Ошибка при загрузке видео: {str(e)}")
             raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
-        
+
 
 @user_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:

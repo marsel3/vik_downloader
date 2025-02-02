@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 
-from config import SESSION_ID
+from config import SESSION_ID, instagram_proxy, tik_tok_proxy
 
 
 class VideoDownloadError(Exception):
@@ -171,16 +171,15 @@ class InstagramDownloader(BaseDownloader):
         self.ydl_opts = {
             **self.base_opts,
             'format': 'best',
-            'cookiefile': 'instagram.txt',
-            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'cookiefile': 'instagram.txt',  # Используем файл куков
+            'proxy': instagram_proxy,
             'http_headers': {
                 **self.base_opts['http_headers'],
                 'Accept': '*/*',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Origin': 'https://www.instagram.com',
                 'Referer': 'https://www.instagram.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Cookie': f'sessionid={SESSION_ID}'  # Добавьте актуальный sessionid
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         }
 
@@ -261,7 +260,7 @@ class TikTokDownloader(BaseDownloader):
         self.ydl_opts = {
             **self.base_opts,
             'format': 'best',
-            'proxy': 'http://ps125041:VaIJk72sV3@194.87.216.159:8000',
+            'proxy': tik_tok_proxy,
             'http_headers': {
                 **self.base_opts['http_headers'],
                 'Accept': '*/*',
