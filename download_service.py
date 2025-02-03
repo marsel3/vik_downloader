@@ -69,10 +69,17 @@ class YouTubeDownloader(BaseDownloader):
         super().__init__()
         self.ydl_opts = {
             **self.base_opts,
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'postprocessor_args': [
+                '-c:v', 'libx264',
+                '-c:a', 'aac',
+                '-strict', 'experimental',
+                '-movflags', '+faststart'
+            ],
             'cookiefile': 'cookies.txt'
         }
-
+        
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
         try:
             info = await asyncio.get_event_loop().run_in_executor(

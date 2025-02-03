@@ -383,9 +383,15 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
     elif is_youtube:
         ydl_opts = {
             **common_opts,
-            'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]/best[ext=mp4]',
+            'format': f'bestvideo[height<={format_id}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]',
             'outtmpl': output_path,
             'merge_output_format': 'mp4',
+            'postprocessor_args': [
+                '-c:v', 'libx264',
+                '-c:a', 'aac',
+                '-strict', 'experimental',
+                '-movflags', '+faststart'
+            ],
             'fragment_retries': 50,
             'retries': 50,
             'socket_timeout': 120,
