@@ -27,13 +27,18 @@ async def get_video(url: str):
 async def add_video(url: str, title: str, author: str, duration: str, thumbnail: str):
     async with dp["db"].acquire() as conn:
         async with conn.transaction():
+            # Преобразуем thumbnail в строку и обрезаем при необходимости
+            thumbnail_str = str(thumbnail)[:2048] if thumbnail else None
+            # Обрезаем source_url если он слишком длинный
+            url = str(url)[:2048]
+            
             return await conn.fetchval(
                 '''INSERT INTO videos (source_url, title, author, upload_date, duration, thumbnail_url, platform) 
                 VALUES ($1, $2, $3, $4, $5, $6, $7) 
                 ON CONFLICT (source_url) DO UPDATE 
                 SET title=$2, author=$3, duration=$5, thumbnail_url=$6 
                 RETURNING video_id''',
-                url, title, author, datetime.now(), duration, thumbnail, 'vk'
+                url, title, author, datetime.now(), duration, thumbnail_str, 'instagram'  # Изменил platform на 'instagram'
             )
 
 

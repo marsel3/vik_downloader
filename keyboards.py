@@ -72,7 +72,7 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
     keyboard = []
     duration = float(info.get('duration', 0))
     formats = info.get('formats', [])
-    url = info.get('source_url', '')
+    source_url = str(info.get('source_url', ''))
     
     # Проверяем наличие аудио в кэше
     cached_audio = await get_file(video_id, 'audio', 'audio')
@@ -97,7 +97,11 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
             )
         ])
 
-    is_instagram = 'instagram.com' in url
+    # Проверяем, является ли это Instagram видео
+    is_instagram = any(
+        platform in str(source_url).lower() 
+        for platform in ['instagram.com', '/p/', '/reel/', '/stories/']
+    )
     
     if is_instagram:
         # Для Instagram показываем только одну кнопку с лучшим качеством
@@ -160,3 +164,5 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
                     ])
     
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+

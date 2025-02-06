@@ -1,10 +1,9 @@
 import yt_dlp
 import asyncio
-import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
-
-from config import SESSION_ID, instagram_proxy, tik_tok_proxy
+import os
+from config import instagram_proxy, tik_tok_proxy
 
 
 class VideoDownloadError(Exception):
@@ -168,98 +167,112 @@ class YouTubeDownloader(BaseDownloader):
                 raise VideoDownloadError("Не удалось загрузить видео с YouTube")
         except Exception as e:
             print(f"Ошибка в YouTube загрузчике: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
             raise VideoDownloadError(f"Неожиданная ошибка при загрузке с YouTube: {str(e)}")
 
 
 class InstagramDownloader(BaseDownloader):
     def __init__(self):
         super().__init__()
+        from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, instagram_proxy
+        from session_manager import InstagramService
+        self.instagram_service = InstagramService(
+            username=INSTAGRAM_USERNAME,
+            password=INSTAGRAM_PASSWORD,
+            proxy=instagram_proxy
+        )
         self.ydl_opts = {
             **self.base_opts,
             'format': 'best',
-            'cookiefile': 'instagram.txt',  # Используем файл куков
+            'cookiefile': 'instagram.txt',
             'proxy': instagram_proxy,
             'http_headers': {
                 **self.base_opts['http_headers'],
                 'Accept': '*/*',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'Referer': 'https://www.instagram.com/'
             }
         }
-
-    async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
+    
+    async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL = None) -> Optional[Dict]:
         try:
-            info = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: ydl.extract_info(url, download=False)
-            )
+            # Пробуем получить информацию через instagrapi для историй и постов
+            if 'instagram.com' in url and ('stories' in url or '/reel/' in url or '/p/' in url):
+                try:
+                    info = await self.instagram_service.get_media_info(url)
+                    print(f"Successfully got info: {info}")
+                    if info:
+                        return info
+                except Exception as e:
+                    print(f"Error getting Instagram media info: {e}")
 
-            if not info:
-                raise VideoDownloadError("Не удалось получить информацию о видео")
+            # Для остальных случаев пробуем использовать yt-dlp
+            if ydl:
+                info = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=False)
+                )
 
-            duration = self._normalize_duration(info.get('duration', 0))
-            formats = []
+                if not info:
+                    raise VideoDownloadError("Не удалось получить информацию о видео")
 
-            # Пытаемся получить основной URL видео
-            main_url = info.get('url')
-            if main_url:
-                formats.append({
-                    'url': main_url,
-                    'format_id': 'url720',
-                    'ext': info.get('ext', 'mp4'),
-                    'filesize': self._safe_get_filesize(info),
-                    'format': '720p',
-                    'duration': duration,
-                    'width': self._safe_int(info.get('width'), 0),
-                    'height': self._safe_int(info.get('height'), 720)
-                })
+                duration = self._normalize_duration(info.get('duration', 0))
+                formats = []
 
-            # Обрабатываем дополнительные форматы
-            for f in info.get('formats', []):
-                if not f or not f.get('url'):
-                    continue
+                for f in info.get('formats', []):
+                    if not f or not f.get('url'):
+                        continue
 
-                height = self._safe_int(f.get('height'), 720)
-                formats.append({
-                    'url': f['url'],
-                    'format_id': f'url{height}',
-                    'ext': f.get('ext', 'mp4'),
-                    'filesize': self._safe_get_filesize(f),
-                    'format': f'{height}p',
-                    'duration': duration,
-                    'width': self._safe_int(f.get('width'), 0),
-                    'height': height
-                })
+                    height = self._safe_int(f.get('height'), 720)
+                    formats.append({
+                        'url': f['url'],
+                        'format_id': f'url{height}',
+                        'ext': f.get('ext', 'mp4'),
+                        'filesize': self._safe_get_filesize(f),
+                        'format': f'{height}p',
+                        'duration': duration,
+                        'width': self._safe_int(f.get('width'), 0),
+                        'height': height
+                    })
 
-            return {
-                'title': info.get('title', 'Без названия'),
-                'duration': str(duration),
-                'thumbnail': info.get('thumbnail', ''),
-                'author': info.get('uploader', 'Unknown'),
-                'formats': formats,
-                'source_url': url
-            }
+                return {
+                    'title': info.get('title', 'Без названия'),
+                    'duration': str(duration),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'author': info.get('uploader', 'Unknown'),
+                    'formats': formats,
+                    'source_url': url
+                }
 
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e).lower()
-            if "not found" in error_msg or "404" in error_msg:
-                raise VideoDownloadError("Пост в Instagram не найден или удалён")
-            elif "private" in error_msg:
-                raise VideoDownloadError("Это приватный пост в Instagram")
-            elif "login" in error_msg:
-                raise VideoDownloadError("Требуется авторизация в Instagram")
-            elif "unable to extract" in error_msg:
-                raise VideoDownloadError("Не удалось получить видео из Instagram. Возможно, пост недоступен")
-            else:
-                raise VideoDownloadError("Не удалось загрузить видео из Instagram")
         except Exception as e:
-            print(f"Ошибка в Instagram загрузчике: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с Instagram: {str(e)}")
+            raise VideoDownloadError(f"Ошибка при загрузке с Instagram: {str(e)}")
 
+    async def download_video(self, url: str, output_path: str, format_id: str = None, is_story: bool = False) -> None:
+        """Скачивает видео из Instagram"""
+        try:
+            if 'instagram.com' in url and ('stories' in url or '/reel/' in url or '/p/' in url):
+                success = await self.instagram_service.download_media(url, output_path)
+                if success:
+                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                        raise VideoDownloadError("Файл не был загружен корректно")
+                    return
 
+            raise VideoDownloadError("Не удалось скачать видео")
+                
+        except Exception as e:
+            raise VideoDownloadError(f"Ошибка при скачивании: {str(e)}")    
+    
+    async def download_audio(self, url: str, output_path: str) -> bool:
+        """Скачивает аудио из видео Instagram"""
+        try:
+            # Просто качаем как видео, но с другим расширением
+            success = await self.instagram_service.download_media(url, output_path)
+            if not success:
+                raise Exception("Failed to download audio")
+            return True
+        except Exception as e:
+            return False
+        
+            
 class TikTokDownloader(BaseDownloader):
     """Загрузчик для TikTok"""
     def __init__(self):
@@ -340,7 +353,6 @@ class TikTokDownloader(BaseDownloader):
                 raise VideoDownloadError("Не удалось загрузить видео из TikTok")
         except Exception as e:
             print(f"Ошибка в TikTok загрузчике: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
             raise VideoDownloadError(f"Неожиданная ошибка при загрузке с TikTok: {str(e)}")
 
 
@@ -405,7 +417,6 @@ class VKDownloader(BaseDownloader):
                 raise VideoDownloadError("Не удалось загрузить видео из VK")
         except Exception as e:
             print(f"Ошибка в VK загрузчике: {str(e)}")
-            print(f"Traceback: {traceback.format_exc()}")
             raise VideoDownloadError(f"Неожиданная ошибка при загрузке с VK: {str(e)}")
 
 
@@ -473,8 +484,6 @@ class Downloader:
         except VideoDownloadError:
             raise
         except Exception as e:
-            print(f"Неожиданная ошибка в get_video_info: {str(e)}")
-            print(f"Полный traceback: {traceback.format_exc()}")
             raise VideoDownloadError(f"Неожиданная ошибка при получении информации о видео: {str(e)}")
 
     def clear_cache(self):

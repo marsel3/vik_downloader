@@ -1,3 +1,5 @@
+import os
+import traceback
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 import asyncio
@@ -184,11 +186,16 @@ def get_platform(url: str) -> Optional[str]:
 async def download_audio(url: str, output_path: str) -> bool:
     """Загрузка аудио из видео"""
     try:
+        # Если это Instagram, используем специальный обработчик
+        if 'instagram.com' in url.lower():
+            from download_service import downloader
+            instagram_downloader = downloader._downloaders['instagram']
+            return await instagram_downloader.download_audio(url, output_path)
+            
         is_tiktok = 'tiktok.com' in url.lower()
-        is_instagram = 'instagram.com' in url.lower()
         
         proxy_settings = {
-            'proxy': instagram_proxy if is_instagram else tik_tok_proxy,
+            'proxy': tik_tok_proxy if is_tiktok else None,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': '*/*',
@@ -198,39 +205,41 @@ async def download_audio(url: str, output_path: str) -> bool:
 
         # Общие настройки для отключения прогресса
         ydl_opts = {
-            'format': 'worstaudio/worst',
+            'format': 'bestaudio/best',
             'outtmpl': output_path,
             'quiet': True,
             'no_warnings': True,
             'noprogress': True,
             'progress_hooks': [],
             'logger': None,
-            'extract_audio': True,
-            'audio_format': 'mp3',
-            'no_check_certificate': True,  # Отключаем проверку SSL
-            'nocheckcertificate': True,    # Дублируем для надёжности
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'no_check_certificate': True,
+            'nocheckcertificate': True
         }
 
-        if is_tiktok or is_instagram:
+        if is_tiktok:
             ydl_opts.update(proxy_settings)
-            if is_instagram:
-                ydl_opts.update({
-                    'cookiefile': 'instagram.txt',
-                    'socket_timeout': 30,
-                    'retries': 5
-                })
+            ydl_opts.update({
+                'socket_timeout': 30,
+                'retries': 5
+            })
         
         # Чистим URL от эмодзи и лишних символов
         clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([clean_url])
-            return True
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return True
+            return False
     except Exception as e:
-        print(f"Ошибка при загрузке аудио: {str(e)}")
         return False
-
-
+    
+       
 def format_duration(duration: int) -> str:
     """Форматирование длительности в читаемый вид"""
     hours = duration // 3600
@@ -247,7 +256,20 @@ def get_initial_caption(info: Dict[str, Any]) -> str:
     title = info.get('title', 'Без названия').replace('&quot;', '"')
     author = info.get('author', 'Unknown').replace('&quot;', '"')
     source_url = info.get('source_url', '')
-    duration = int(info.get('duration', '0'))
+    
+    # Безопасное преобразование duration
+    try:
+        duration_str = info.get('duration', '0')
+        if isinstance(duration_str, str):
+            # Удаляем все нечисловые символы кроме точки и преобразуем в секунды
+            duration_str = ''.join(c for c in duration_str if c.isdigit() or c == '.')
+            duration = round(float(duration_str))  # Округляем до ближайшего целого
+        elif isinstance(duration_str, (int, float)):
+            duration = round(float(duration_str))
+        else:
+            duration = 0
+    except (ValueError, TypeError):
+        duration = 0
     
     return (
         f"<code>🍿 {title}</code>\n"
@@ -256,14 +278,25 @@ def get_initial_caption(info: Dict[str, Any]) -> str:
         f"📅 Дата: {datetime.now().strftime('%d.%m.%Y')}\n"
         f"⏱ Продолжительность: {format_duration(duration)}"
     )
-
+    
 
 def get_download_caption(info: Dict[str, Any], file_type: str, quality: Optional[str] = None) -> str:
     """Генерация описания для загруженного видео/аудио"""
     title = info.get('title', 'Без названия').replace('&quot;', '"')
     author = info.get('author', 'Unknown').replace('&quot;', '"')
     source_url = info.get('source_url', '')
-    duration = int(info.get('duration', '0'))
+    
+    try:
+        duration_str = info.get('duration', '0')
+        if isinstance(duration_str, str):
+            duration_str = ''.join(c for c in duration_str if c.isdigit() or c == '.')
+            duration = round(float(duration_str))
+        elif isinstance(duration_str, (int, float)):
+            duration = round(float(duration_str))
+        else:
+            duration = 0
+    except (ValueError, TypeError):
+        duration = 0
 
     resolutions = {
         "144": "256x144",
@@ -288,8 +321,7 @@ def get_download_caption(info: Dict[str, Any], file_type: str, quality: Optional
         f"⏱ Продолжительность: {format_duration(duration)}"
         f"{quality_str}"
     )
-
-
+    
 async def send_large_video(message: Message, video_path: str, caption: str) -> Optional[Message]:
     """Отправка большого видео файла с повторными попытками"""
     for attempt in range(MAX_RETRY_ATTEMPTS):
@@ -325,97 +357,88 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
 async def download_video(url: str, output_path: str, format_id: str, is_tiktok: bool = False,
                         is_youtube: bool = False, is_instagram: bool = False) -> None:
     """Загрузка видео с учетом особенностей платформы"""
-    
-    # Базовые настройки прокси и заголовков
-    proxy_settings = {
-        'proxy': instagram_proxy,  # Используем instagram_proxy вместо хардкода
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Connection': 'keep-alive'
-        }
-    }
-    # Общие настройки для отключения прогресса
-    common_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'noprogress': True,
-        'progress_hooks': [],
-        'logger': None,
-        'no_check_certificate': True,  # Отключаем проверку SSL
-        'nocheckcertificate': True,    # Дублируем для надёжности
-        'socket_timeout': 30,
-        'retries': 5
-    }
+    try:
+        if is_instagram:
+            from download_service import downloader
+            instagram_downloader = downloader._downloaders['instagram']
+            await instagram_downloader.download_video(url, output_path, format_id)
+            return
 
-    # Чистим URL от эмодзи и лишних символов
-    clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
-
-    if is_tiktok:
-        ydl_opts = {
-            **common_opts,
-            'format': 'best',
-            'outtmpl': output_path,
-            'merge_output_format': 'mp4',
-            **proxy_settings,
+        # Базовые настройки прокси и заголовков
+        proxy_settings = {
+            'proxy': instagram_proxy if is_instagram else tik_tok_proxy,
             'http_headers': {
-                **proxy_settings['http_headers'],
-                'Origin': 'https://www.tiktok.com',
-                'Referer': 'https://www.tiktok.com/'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Connection': 'keep-alive'
             }
         }
-    elif is_instagram:
-        ydl_opts = {
-            **common_opts,
-            'format': 'best[ext=mp4]',
-            'outtmpl': output_path,
-            'cookiefile': 'instagram.txt',
-            **proxy_settings,
-            'http_headers': {
-                **proxy_settings['http_headers'],
-                'Origin': 'https://www.instagram.com',
-                'Referer': 'https://www.instagram.com/',
-            },
-            'extract_flat': False,      # Изменено с True на False
-            'ignoreerrors': False,      # Изменено с True на False для получения полной ошибки
-        }
-    elif is_youtube:
-        ydl_opts = {
-            **common_opts,
-            'format': f'bestvideo[height<={format_id}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]',
-            'outtmpl': output_path,
-            'merge_output_format': 'mp4',
-            'postprocessor_args': [
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-strict', 'experimental',
-                '-movflags', '+faststart'
-            ],
-            'fragment_retries': 50,
-            'retries': 50,
-            'socket_timeout': 120,
-            'cookiefile': 'cookies.txt',
-            'http_chunk_size': 10485760
-        }
-    else:
-        ydl_opts = {
-            **common_opts,
-            'format': f'best[height<={format_id}]',
-            'outtmpl': output_path
+
+        # Общие настройки для отключения прогресса
+        common_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'noprogress': True,
+            'progress_hooks': [],
+            'logger': None,
+            'no_check_certificate': True,
+            'nocheckcertificate': True,
+            'socket_timeout': 30,
+            'retries': 5
         }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
+        # Чистим URL от эмодзи и лишних символов
+        clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
+
+        if is_tiktok:
+            ydl_opts = {
+                **common_opts,
+                'format': 'best',
+                'outtmpl': output_path,
+                'merge_output_format': 'mp4',
+                **proxy_settings,
+                'http_headers': {
+                    **proxy_settings['http_headers'],
+                    'Origin': 'https://www.tiktok.com',
+                    'Referer': 'https://www.tiktok.com/'
+                }
+            }
+        elif is_youtube:
+            ydl_opts = {
+                **common_opts,
+                'format': f'bestvideo[height<={format_id}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]',
+                'outtmpl': output_path,
+                'merge_output_format': 'mp4',
+                'postprocessor_args': [
+                    '-c:v', 'libx264',
+                    '-c:a', 'aac',
+                    '-strict', 'experimental',
+                    '-movflags', '+faststart'
+                ],
+                'fragment_retries': 50,
+                'retries': 50,
+                'socket_timeout': 120,
+                'cookiefile': 'cookies.txt',
+                'http_chunk_size': 10485760
+            }
+        else:
+            ydl_opts = {
+                **common_opts,
+                'format': f'best[height<={format_id}]',
+                'outtmpl': output_path
+            }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             await asyncio.get_event_loop().run_in_executor(
                 None, 
                 lambda: ydl.download([clean_url])
             )
-        except Exception as e:
-            print(f"Ошибка при загрузке видео: {str(e)}")
-            raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
 
-
+    except Exception as e:
+        raise VideoDownloadError(f"Ошибка при загрузке видео: {str(e)}")
+    
+    
 @user_router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     """Обработка команды /start"""
@@ -464,10 +487,12 @@ async def process_video_url(message: Message) -> None:
             return
         
         url, platform = url_data
+        
         processing_msg = await message.answer("⏳ Получаю информацию о видео...")
         
         # Получение информации о видео
         video_info = await get_video(url)
+        
         info = await downloader.get_video_info(url)
         
         if not info:
@@ -476,30 +501,34 @@ async def process_video_url(message: Message) -> None:
             return
 
         # Подготовка данных
-        video_data = {
-            'source_url': url,
-            'title': info.get('title', 'Без названия'),
-            'author': info.get('author', 'Unknown'),
-            'duration': info.get('duration', '0'),
-            'thumbnail': info.get('thumbnail', ''),
-            'platform': platform
-        }
+        try:
+            video_data = {
+                'source_url': url,  
+                'title': info.get('title', 'Без названия'),
+                'author': info.get('author') or 'Unknown',  # Используем 'Unknown' если author is None
+                'duration': info.get('duration', '0'),
+                'thumbnail': str(info.get('thumbnail', '')),
+                'platform': platform
+            }
 
-        if not video_info:
-            video_id = await add_video(
-                url=url,
-                title=video_data['title'],
-                author=video_data['author'],
-                duration=video_data['duration'],
-                thumbnail=video_data['thumbnail']
-            )
-        else:
-            video_id = video_info['video_id']
+            if not video_info:
+                video_id = await add_video(
+                    url=url,
+                    title=video_data['title'],
+                    author=video_data['author'],
+                    duration=video_data['duration'],
+                    thumbnail=video_data['thumbnail']
+                )
+            else:
+                video_id = video_info['video_id']
 
-        if processing_msg:
-            await safe_delete_message(processing_msg)
+            if processing_msg:
+                await safe_delete_message(processing_msg)
 
-        await send_video_preview(message, video_data, video_id, info)
+            await send_video_preview(message, video_data, video_id, info)
+                
+        except Exception as e:
+            raise
             
     except VideoDownloadError as e:
         error_message = str(e)
@@ -515,28 +544,38 @@ async def process_video_url(message: Message) -> None:
                 await processing_msg.edit_text(error_message)
             except TelegramAPIError:
                 await message.answer(error_message)
-
-
+                
+                
 async def send_video_preview(message: Message, video_data: Dict, video_id: int, info: Dict) -> None:
     """Отправка превью видео"""
-    caption = get_initial_caption(video_data)
-    keyboard = await get_download_keyboard(video_id, info)
-
     try:
-        await message.answer_photo(
-            photo=video_data['thumbnail'],
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-    except TelegramAPIError:
-        await message.answer(
-            text=caption,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
+        caption = get_initial_caption(video_data)
+        
+        keyboard = await get_download_keyboard(video_id, info)
 
-
+        try:
+            # Проверяем, является ли thumbnail URL строкой
+            thumbnail = str(video_data['thumbnail']) if video_data.get('thumbnail') else None
+            
+            if thumbnail:
+                await message.answer_photo(
+                    photo=thumbnail,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+            else:
+                raise ValueError("No thumbnail URL available")
+        except Exception as photo_error:
+            await message.answer(
+                text=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+    except Exception as e:
+        raise
+    
+    
 @user_router.callback_query(F.data.startswith("dl_"))
 async def process_download(callback: CallbackQuery) -> None:
     """Обработка нажатий на кнопки загрузки"""
