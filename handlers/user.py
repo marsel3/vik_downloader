@@ -1,5 +1,4 @@
 import os
-import traceback
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 import asyncio
@@ -11,7 +10,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
-from config import instagram_proxy, tik_tok_proxy
+from config import tik_tok_proxy
 from database import (
     check_user_exists,
     add_user,
@@ -233,12 +232,23 @@ async def download_audio(url: str, output_path: str) -> bool:
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([clean_url])
+            
+            # Проверяем наличие файла с суффиксом .mp3
+            mp3_path = f"{output_path}.mp3"
+            if os.path.exists(mp3_path):
+                os.rename(mp3_path, output_path)
+                return True
+            
+            # Проверяем оригинальный путь
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 return True
+                
             return False
+            
     except Exception as e:
+        print(f"Audio download error: {str(e)}")  # Для отладки
         return False
-    
+     
        
 def format_duration(duration: int) -> str:
     """Форматирование длительности в читаемый вид"""

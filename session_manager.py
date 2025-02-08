@@ -1,15 +1,11 @@
 import aiohttp
 from instagrapi import Client
-import traceback
 from instagrapi.exceptions import LoginRequired, ClientError
 import json
 import os
-from datetime import datetime
-import asyncio
 from typing import Optional, Dict
 from pathlib import Path
 
-import yt_dlp
 
 class InstagramService:
     def __init__(self, username: str, password: str, proxy: str = None):
@@ -148,19 +144,29 @@ class InstagramService:
                 try:
                     parts = [p for p in url.split('/') if p]
                     username = parts[parts.index('stories') + 1]
+                    story_id = parts[-1] if parts[-1].isdigit() else None
                     
                     user_id = client.user_id_from_username(username)
                     stories = client.user_stories(user_id)
                     
                     if not stories:
                         raise Exception("No active stories found")
-                    
-                    story = stories[0]
-                    video_url = story.video_url if hasattr(story, 'video_url') and story.video_url else None
-                    
-                    if not video_url:
-                        raise Exception("Story doesn't contain video")
-                    
+                        
+                    if story_id:
+                        story = next((s for s in stories if str(s.pk) == story_id), stories[0])
+                    else:
+                        story = stories[0]
+
+                    if story.media_type == 2:  # Video
+                        media_url = story.video_url
+                    elif story.media_type == 1:  # Photo 
+                        media_url = story.thumbnail_url
+                    else:
+                        raise Exception("Unsupported media type")
+
+                    if not media_url:
+                        raise Exception("Failed to get media URL")
+
                     timeout = aiohttp.ClientTimeout(total=300, connect=60)
                     conn = aiohttp.TCPConnector(force_close=True, ssl=False)
                     
@@ -178,24 +184,24 @@ class InstagramService:
                         headers=headers,
                         cookies=client.get_settings()['cookies']
                     ) as session:
-                        async with session.get(str(video_url), proxy=self.proxy) as response:
+                        async with session.get(str(media_url), proxy=self.proxy) as response:
                             if response.status == 200:
                                 with open(output_path, 'wb') as f:
                                     async for chunk in response.content.iter_chunked(8192):
                                         f.write(chunk)
                                 return True
                     return False
-                    
+                        
                 except Exception as e:
-                    raise
-                    
+                    raise Exception(f"Error downloading story: {str(e)}")
+                        
             else:
                 try:
                     media_pk = client.media_pk_from_url(url)
                     media_info = client.media_info(media_pk)
                     
                     if not hasattr(media_info, 'video_url') or not media_info.video_url:
-                        raise Exception("Медиа не содержит видео")
+                        raise Exception("Media doesn't contain video")
                     
                     timeout = aiohttp.ClientTimeout(total=300, connect=60)
                     conn = aiohttp.TCPConnector(force_close=True, ssl=False)
@@ -221,10 +227,9 @@ class InstagramService:
                                         f.write(chunk)
                                 return True
                     return False
-                    
-                except Exception as e:
-                    raise
                         
+                except Exception as e:
+                    raise Exception(f"Error downloading post: {str(e)}")
+                            
         except Exception as e:
-            raise
-        
+            raise        

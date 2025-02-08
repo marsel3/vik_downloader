@@ -1,9 +1,10 @@
+from pathlib import Path
 import yt_dlp
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 import os
-from config import instagram_proxy, tik_tok_proxy
+from config import tik_tok_proxy, instagram_proxy
 
 
 class VideoDownloadError(Exception):
@@ -196,83 +197,73 @@ class InstagramDownloader(BaseDownloader):
     
     async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL = None) -> Optional[Dict]:
         try:
-            # Пробуем получить информацию через instagrapi для историй и постов
-            if 'instagram.com' in url and ('stories' in url or '/reel/' in url or '/p/' in url):
+            if 'instagram.com' in url and ('/stories/' in url or '/reel/' in url or '/reels/' in url or '/p/' in url):
                 try:
                     info = await self.instagram_service.get_media_info(url)
-                    print(f"Successfully got info: {info}")
                     if info:
                         return info
                 except Exception as e:
-                    print(f"Error getting Instagram media info: {e}")
+                    raise VideoDownloadError(f"Ошибка при получении информации: {str(e)}")
 
-            # Для остальных случаев пробуем использовать yt-dlp
-            if ydl:
-                info = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: ydl.extract_info(url, download=False)
-                )
-
-                if not info:
-                    raise VideoDownloadError("Не удалось получить информацию о видео")
-
-                duration = self._normalize_duration(info.get('duration', 0))
-                formats = []
-
-                for f in info.get('formats', []):
-                    if not f or not f.get('url'):
-                        continue
-
-                    height = self._safe_int(f.get('height'), 720)
-                    formats.append({
-                        'url': f['url'],
-                        'format_id': f'url{height}',
-                        'ext': f.get('ext', 'mp4'),
-                        'filesize': self._safe_get_filesize(f),
-                        'format': f'{height}p',
-                        'duration': duration,
-                        'width': self._safe_int(f.get('width'), 0),
-                        'height': height
-                    })
-
-                return {
-                    'title': info.get('title', 'Без названия'),
-                    'duration': str(duration),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'author': info.get('uploader', 'Unknown'),
-                    'formats': formats,
-                    'source_url': url
-                }
+            raise VideoDownloadError("Неподдерживаемый тип контента")
 
         except Exception as e:
             raise VideoDownloadError(f"Ошибка при загрузке с Instagram: {str(e)}")
 
-    async def download_video(self, url: str, output_path: str, format_id: str = None, is_story: bool = False) -> None:
-        """Скачивает видео из Instagram"""
+    async def download_video(self, url: str, output_path: str, format_id: str = None) -> None:
         try:
-            if 'instagram.com' in url and ('stories' in url or '/reel/' in url or '/p/' in url):
+            if 'instagram.com' in url and ('/stories/' in url or '/reel/' in url or '/reels/' in url or '/p/' in url):
                 success = await self.instagram_service.download_media(url, output_path)
                 if success:
                     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
                         raise VideoDownloadError("Файл не был загружен корректно")
                     return
-
-            raise VideoDownloadError("Не удалось скачать видео")
-                
+                raise VideoDownloadError("Не удалось скачать видео")
         except Exception as e:
-            raise VideoDownloadError(f"Ошибка при скачивании: {str(e)}")    
-    
+            raise VideoDownloadError(f"Ошибка при скачивании: {str(e)}")
+
     async def download_audio(self, url: str, output_path: str) -> bool:
-        """Скачивает аудио из видео Instagram"""
         try:
-            # Просто качаем как видео, но с другим расширением
-            success = await self.instagram_service.download_media(url, output_path)
-            if not success:
-                raise Exception("Failed to download audio")
-            return True
+            if 'instagram.com' in url and ('/stories/' in url or '/reel/' in url or '/reels/' in url or '/p/' in url):
+                video_url = await self.instagram_service.get_media_info(url)
+                if not video_url or not video_url.get('formats'):
+                    return False
+
+                # Проверяем, что это видео
+                first_format = video_url['formats'][0]
+                if first_format.get('ext') != 'mp4':
+                    return False
+
+                media_url = str(first_format['url'])
+                
+                from config import instagram_proxy
+
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': output_path,
+                    'quiet': True,
+                    'proxy': instagram_proxy,
+                    'nocheckcertificate': True,
+                    'no_check_certificate': True,
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                    }]
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([media_url])
+                    
+                if os.path.exists(f"{output_path}.mp3"):
+                    os.rename(f"{output_path}.mp3", output_path)
+                    return True
+                    
+            return False
+                
         except Exception as e:
             return False
         
-            
+                    
 class TikTokDownloader(BaseDownloader):
     """Загрузчик для TikTok"""
     def __init__(self):
