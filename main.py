@@ -4,6 +4,7 @@ from aiogram.types import BotCommand
 
 from config import DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT
 from handlers.user import user_router
+from handlers.admin import admin_router
 from loader import bot, dp
 
 
@@ -28,7 +29,7 @@ async def on_shutdown() -> None:
 
 
 async def main() -> None:
-    dp.include_router(user_router)
+    dp.include_routers(admin_router, user_router)
 
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)

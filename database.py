@@ -75,3 +75,51 @@ async def get_video_by_id(video_id: int):
     async with dp["db"].acquire() as conn:
         async with conn.transaction():
             return await conn.fetchrow('SELECT * FROM videos WHERE video_id = $1', video_id)
+
+
+async def get_admin_list():
+    async with dp["db"].acquire() as conn:
+        async with conn.transaction():
+            admins = await conn.fetch('SELECT user_id FROM users WHERE is_admin = true')
+            return [admin['user_id'] for admin in admins]
+
+async def get_users_stats():
+    async with dp["db"].acquire() as conn:
+        async with conn.transaction():
+            # Общее количество пользователей
+            total_users = await conn.fetchval('SELECT COUNT(*) FROM users')
+            
+            # Новые пользователи за день
+            daily_users = await conn.fetchval('''
+                SELECT COUNT(*) FROM users 
+                WHERE first_seen >= NOW() - INTERVAL '1 day'
+            ''')
+            
+            # Новые пользователи за неделю
+            weekly_users = await conn.fetchval('''
+                SELECT COUNT(*) FROM users 
+                WHERE first_seen >= NOW() - INTERVAL '7 days'
+            ''')
+            
+            # Новые пользователи за месяц
+            monthly_users = await conn.fetchval('''
+                SELECT COUNT(*) FROM users 
+                WHERE first_seen >= NOW() - INTERVAL '30 days'
+            ''')
+            
+            return {
+                'total': total_users,
+                'daily': daily_users,
+                'weekly': weekly_users,
+                'monthly': monthly_users
+            }
+
+async def get_all_users():
+    async with dp["db"].acquire() as conn:
+        async with conn.transaction():
+            users = await conn.fetch('SELECT user_id FROM users')
+            return [user['user_id'] for user in users]
+
+
+
+    

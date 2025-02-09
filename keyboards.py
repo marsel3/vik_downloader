@@ -166,3 +166,34 @@ async def get_download_keyboard(video_id: int, info: dict) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def get_admin_keyboard() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить статистику",
+                    callback_data="refresh_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📤 Рассылка",
+                    callback_data="broadcast"
+                )
+            ]
+        ]
+    )
+    return keyboard
+
+def get_cancel_keyboard() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="↩️ Отмена",
+                    callback_data="cancel_broadcast"
+                )
+            ]
+        ]
+    )
+    return keyboard
