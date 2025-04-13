@@ -69,7 +69,7 @@ class YouTubeDownloader(BaseDownloader):
         super().__init__()
         self.ydl_opts = {
             **self.base_opts,
-            'format': 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4',
             'postprocessor_args': [
                 '-c:v', 'libx264',
@@ -411,6 +411,96 @@ class VKDownloader(BaseDownloader):
             raise VideoDownloadError(f"Неожиданная ошибка при загрузке с VK: {str(e)}")
 
 
+class RutubeDownloader(BaseDownloader):
+    """Загрузчик для Rutube"""
+    def __init__(self):
+        super().__init__()
+        self.ydl_opts = {
+            **self.base_opts,
+            'format': 'best',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Origin': 'https://rutube.ru',
+                'Referer': 'https://rutube.ru/'
+            }
+        }
+
+    async def get_video_info(self, url: str, ydl: yt_dlp.YoutubeDL) -> Optional[Dict]:
+        try:
+            # Очищаем URL от эмодзи и лишних символов
+            import re
+            url_pattern = r'https?://[^\s<>"\']+'
+            match = re.search(url_pattern, url)
+            clean_url = match.group(0) if match else url
+            
+            info = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: ydl.extract_info(clean_url, download=False)
+            )
+
+            if not info:
+                raise VideoDownloadError("Не удалось получить информацию о видео")
+
+            duration = self._normalize_duration(info.get('duration', 0))
+            formats = []
+
+            for f in info.get('formats', []):
+                if not f or not f.get('url'):
+                    continue
+
+                height = self._safe_int(f.get('height', 0))
+                if height <= 0:
+                    continue
+
+                formats.append({
+                    'url': f['url'],
+                    'format_id': f'url{height}',
+                    'ext': f.get('ext', 'mp4'),
+                    'filesize': self._safe_get_filesize(f),
+                    'format': f'{height}p',
+                    'duration': duration,
+                    'width': self._safe_int(f.get('width'), 0),
+                    'height': height
+                })
+
+            # Если не нашли форматы с указанной высотой, добавляем лучший доступный
+            if not formats and 'url' in info:
+                formats.append({
+                    'url': info['url'],
+                    'format_id': 'url720',
+                    'ext': info.get('ext', 'mp4'),
+                    'filesize': self._safe_get_filesize(info),
+                    'format': 'HD',
+                    'duration': duration,
+                    'width': self._safe_int(info.get('width'), 0),
+                    'height': 720
+                })
+
+            return {
+                'title': info.get('title', 'Без названия'),
+                'duration': str(duration),
+                'thumbnail': info.get('thumbnail', ''),
+                'author': info.get('uploader', 'Unknown'),
+                'formats': sorted(formats, key=lambda x: self._safe_int(x['height'], 0), reverse=True),
+                'source_url': clean_url
+            }
+
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "404" in error_msg:
+                raise VideoDownloadError("Видео на Rutube не найдено или было удалено")
+            elif "private" in error_msg:
+                raise VideoDownloadError("Это приватное видео Rutube")
+            elif "unavailable" in error_msg or "unable to extract" in error_msg:
+                raise VideoDownloadError("Видео Rutube недоступно или требует авторизации")
+            else:
+                raise VideoDownloadError("Не удалось загрузить видео с Rutube")
+        except Exception as e:
+            print(f"Ошибка в Rutube загрузчике: {str(e)}")
+            raise VideoDownloadError(f"Неожиданная ошибка при загрузке с Rutube: {str(e)}")
+
+
 class Downloader:
     """Основной класс загрузчика"""
     def __init__(self):
@@ -422,7 +512,8 @@ class Downloader:
             'youtube': YouTubeDownloader(),
             'instagram': InstagramDownloader(),
             'tiktok': TikTokDownloader(),
-            'vk': VKDownloader()
+            'vk': VKDownloader(),
+            'rutube': RutubeDownloader()
         }
 
     def _get_platform(self, url: str) -> Optional[str]:
@@ -435,6 +526,8 @@ class Downloader:
             return 'tiktok'
         elif 'vk.com' in url:
             return 'vk'
+        elif 'rutube.ru' in url:
+            return 'rutube'
         return None
 
     async def get_video_info(self, url: str) -> Optional[Dict]:

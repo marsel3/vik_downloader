@@ -10,7 +10,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, FSInputFile
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
-from config import tik_tok_proxy
+from config import tik_tok_proxy, instagram_proxy
 from database import (
     check_user_exists,
     add_user,
@@ -31,7 +31,8 @@ SUPPORTED_PLATFORMS = {
     'youtube.com': 'youtube',
     'youtu.be': 'youtube',
     'instagram.com': 'instagram',
-    'tiktok.com': 'tiktok'
+    'tiktok.com': 'tiktok',
+    'rutube.ru': 'rutube'
 }
 
 MAX_RETRY_ATTEMPTS = 3
@@ -53,7 +54,7 @@ async def check_subscription_callback(callback: CallbackQuery) -> None:
     if is_subscribed:
         await callback.message.delete()
         await callback.message.answer(
-            "👋 Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+            "👋 Отправь мне ссылку на видео из YouTube, Instagram, TikTok, VK или Rutube, "
             "и я помогу тебе его скачать."
         )
     else:
@@ -228,7 +229,10 @@ async def download_audio(url: str, output_path: str) -> bool:
             })
         
         # Чистим URL от эмодзи и лишних символов
-        clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
+        import re
+        url_pattern = r'https?://[^\s<>"\']+'
+        match = re.search(url_pattern, url)
+        clean_url = match.group(0) if match else url
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([clean_url])
@@ -365,7 +369,7 @@ async def send_large_video(message: Message, video_path: str, caption: str) -> O
 
 
 async def download_video(url: str, output_path: str, format_id: str, is_tiktok: bool = False,
-                        is_youtube: bool = False, is_instagram: bool = False) -> None:
+                        is_youtube: bool = False, is_instagram: bool = False, is_rutube: bool = False) -> None:
     """Загрузка видео с учетом особенностей платформы"""
     try:
         if is_instagram:
@@ -376,7 +380,7 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
 
         # Базовые настройки прокси и заголовков
         proxy_settings = {
-            'proxy': instagram_proxy if is_instagram else tik_tok_proxy,
+            'proxy': instagram_proxy if is_instagram else tik_tok_proxy if is_tiktok else None,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
                 'Accept': '*/*',
@@ -399,7 +403,10 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
         }
 
         # Чистим URL от эмодзи и лишних символов
-        clean_url = ''.join(c for c in url if c.isprintable() and not c.isspace())
+        import re
+        url_pattern = r'https?://[^\s<>"\']+'
+        match = re.search(url_pattern, url)
+        clean_url = match.group(0) if match else url
 
         if is_tiktok:
             ydl_opts = {
@@ -417,8 +424,7 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
         elif is_youtube:
             ydl_opts = {
                 **common_opts,
-                #'format': f'bestvideo[height<={format_id}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={format_id}][ext=mp4]',
-                'format': f'bestvideo[height<={format_id}][ext=mp4]+bestaudio[ext=m4a]/best[height<={format_id}]',
+                'format': f'bestvideo[height<={format_id}]+bestaudio/best[height<={format_id}]',
                 'outtmpl': output_path,
                 'merge_output_format': 'mp4',
                 'postprocessor_args': [
@@ -432,6 +438,23 @@ async def download_video(url: str, output_path: str, format_id: str, is_tiktok: 
                 'socket_timeout': 120,
                 'cookiefile': 'cookies.txt',
                 'http_chunk_size': 10485760
+            }
+        elif is_rutube:
+            # Специальные настройки для Rutube
+            rutube_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Origin': 'https://rutube.ru',
+                'Referer': 'https://rutube.ru/'
+            }
+            
+            ydl_opts = {
+                **common_opts,
+                'format': f'best[height<={format_id}]/best',
+                'outtmpl': output_path,
+                'merge_output_format': 'mp4',
+                'http_headers': rutube_headers
             }
         else:
             ydl_opts = {
@@ -457,7 +480,7 @@ async def cmd_start(message: Message) -> None:
         if not await check_user_exists(message.from_user.id):
             await add_user(message.from_user.id, message.from_user.username)
         await message.answer(
-            "👋 Привет! Отправь мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+            "👋 Привет! Отправь мне ссылку на видео из YouTube, Instagram, TikTok, VK или Rutube, "
             "и я помогу тебе его скачать."
         )
     except Exception as e:
@@ -685,6 +708,7 @@ async def process_new_download(callback: CallbackQuery, video_data: Dict,
             is_tiktok = 'tiktok.com' in video_data['source_url']
             is_youtube = 'youtube.com' in video_data['source_url'] or 'youtu.be' in video_data['source_url']
             is_instagram = 'instagram.com' in video_data['source_url']
+            is_rutube = 'rutube.ru' in video_data['source_url']
 
             if file_type == 'video':
                 temp_path = temp_path.with_suffix('.mp4')
@@ -694,7 +718,8 @@ async def process_new_download(callback: CallbackQuery, video_data: Dict,
                     format_id,
                     is_tiktok,
                     is_youtube,
-                    is_instagram
+                    is_instagram,
+                    is_rutube
                 )
             else:
                 temp_path = temp_path.with_suffix('.mp3')
@@ -754,18 +779,32 @@ async def save_file_info(message: Message, video_id: int, file_type: str,
 async def handle_download_error(callback: CallbackQuery, error_message: str, video_id: int) -> None:
     """Обработка ошибок при загрузке"""
     try:
-        info = await downloader.get_video_info(callback.message.caption.split('\n')[1].strip())
-        keyboard = await get_download_keyboard(video_id, info)
-        await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n❌ {error_message}",
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-    except Exception:
-        await callback.message.edit_caption(
-            caption=f"{callback.message.caption}\n\n❌ {error_message}",
-            parse_mode="HTML"
-        )
+        # Извлекаем URL из сообщения, очищаем от эмодзи и пробелов
+        caption_lines = callback.message.caption.split('\n')
+        if len(caption_lines) > 1:
+            url_line = caption_lines[1].strip()
+            # Очищаем URL от эмодзи и лишних символов
+            import re
+            url_pattern = r'https?://[^\s<>"\']+'
+            match = re.search(url_pattern, url_line)
+            if match:
+                clean_url = match.group(0)
+                info = await downloader.get_video_info(clean_url)
+                keyboard = await get_download_keyboard(video_id, info)
+                await callback.message.edit_caption(
+                    caption=f"{callback.message.caption}\n\n❌ {error_message}",
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+                return
+    except Exception as e:
+        print(f"Ошибка в handle_download_error: {str(e)}")
+    
+    # Fallback если что-то пошло не так
+    await callback.message.edit_caption(
+        caption=f"{callback.message.caption}\n\n❌ {error_message}",
+        parse_mode="HTML"
+    )
 
 
 @user_router.callback_query(F.data == "size_limit")
@@ -781,6 +820,6 @@ async def process_size_limit(callback: CallbackQuery) -> None:
 async def process_unknown_message(message: Message) -> None:
     """Обработка неизвестных сообщений"""
     await message.answer(
-        "Отправьте мне ссылку на видео из YouTube, Instagram, TikTok или VK, "
+        "Отправьте мне ссылку на видео из YouTube, Instagram, TikTok, VK или Rutube, "
         "и я помогу вам его скачать."
     )
